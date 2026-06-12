@@ -1,0 +1,55 @@
+# Production observability subdomain — Caddy fragment.
+#
+# Fronts Jaeger / Prometheus / Grafana behind HTTP basic auth on a
+# separate FQDN so the public api domain isn't polluted with admin
+# tooling routes. Imported by the base Caddyfile (see Caddyfile main
+# file `import Caddyfile.observability`).
+#
+# To generate the password hash:
+#   docker run --rm caddy:2-alpine caddy hash-password --plaintext 'your-strong-password'
+# Then set in .env.prod:
+#   OBSERVABILITY_USER=admin
+#   OBSERVABILITY_PASSWORD_HASH=$2a$14$...
+#
+# DNS: point {env.OBSERVABILITY_DOMAIN} A/AAAA at the same host as
+# {env.API_DOMAIN}. Caddy auto-issues a Let's Encrypt cert on first
+# request the same way it does for the api domain.
+
+{env.OBSERVABILITY_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options    "nosniff"
+		Referrer-Policy           "strict-origin-when-cross-origin"
+		X-Frame-Options           "DENY"
+	}
+
+	basic_auth {
+		{env.OBSERVABILITY_USER} {env.OBSERVABILITY_PASSWORD_HASH}
+	}
+
+	# Jaeger UI — Jaeger is configured with QUERY_BASE_PATH=/jaeger
+	# in docker-compose.observability.prod.yml so all asset paths are
+	# already /jaeger-prefixed and no rewriting is needed.
+	handle /jaeger* {
+		reverse_proxy jaeger:16686
+	}
+
+	# Prometheus — strip /prometheus prefix before forwarding because
+	# Prometheus itself is configured with --web.route-prefix=/.
+	handle_path /prometheus/* {
+		reverse_proxy prometheus:9090
+	}
+
+	# Grafana — sub-path mode set via GF_SERVER_SERVE_FROM_SUB_PATH=true
+	# and GF_SERVER_ROOT_URL=https://obs.../grafana so all asset paths
+	# resolve correctly when sub-pathed.
+	handle /grafana* {
+		reverse_proxy grafana:3000
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+}

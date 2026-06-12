@@ -1,0 +1,67 @@
+
+==============================================================================
+PASS 1 — AST syntax check (every .py file)
+==============================================================================
+files scanned: 841
+[OK] all files parse cleanly — zero SyntaxError
+
+==============================================================================
+PASS 2 — alembic migration chain integrity
+==============================================================================
+total migrations: 58
+roots (no down_revision):    1 -> ['0001_init_audit_outbox_idem']
+heads (no successor):        1 -> ['0058_seo_agents']
+[OK] every down_revision resolves to a real migration
+[OK] single head: 0058_seo_agents
+
+==============================================================================
+PASS 3 — main.py router imports resolve
+==============================================================================
+import bindings checked: 100
+[OK] every main.py import resolves to a defined symbol
+
+==============================================================================
+PASS 4 — recent additions (v17-v23) symbol-level checks
+==============================================================================
+  [OK] app/modules/sprint9.py (5/5)
+  [OK] app/modules/marketing/api.py (3/3)
+  [OK] app/modules/marketing/service.py (2/2)
+  [OK] app/modules/seo/models.py (2/2)
+  [OK] app/modules/seo/state.py (3/3)
+  [OK] app/modules/seo/builders.py (4/4)
+  [OK] app/modules/seo/service.py (5/5)
+  [OK] app/modules/seo/schemas.py (4/4)
+  [OK] app/modules/seo/api/admin.py (3/3)
+  [OK] app/modules/seo/api/public.py (2/2)
+  [OK] app/modules/seo/agents/__init__.py (1/1)
+  [OK] app/modules/seo/agents/models.py (6/6)
+  [OK] app/modules/seo/agents/agents.py (7/7)
+  [OK] app/modules/seo/agents/schemas.py (8/8)
+  [OK] app/modules/seo/agents/service.py (8/8)
+  [OK] app/modules/seo/api/agents.py (5/5)
+  [OK] app/modules/seo/api/__init__.py (2/2)
+  [OK] alembic/versions/2026_05_13_0056-0056_funnel_segments.py (3/3)
+  [OK] alembic/versions/2026_05_14_0057-0057_seo_translations.py (3/3)
+  [OK] alembic/versions/2026_05_14_0058-0058_seo_agents.py (8/8)
+  [OK] app/modules/sellers/_frontend_src/src/pages/ProductEditPage.tsx (2/2)
+  [OK] app/modules/sellers/_frontend_src/src/components/Charts.tsx (2/2)
+  [OK] app/modules/sellers/_frontend_src/src/i18n.ts (2/2)
+  [OK] app/modules/sellers/_frontend_src/src/App.tsx (2/2)
+
+[OK] all recent additions present and well-formed
+
+==============================================================================
+PASS 5 — every imported router actually mounted in main.py
+==============================================================================
+router-named imports: 49
+[OK] every imported router is mounted
+
+==============================================================================
+VERDICT
+==============================================================================
+[PASS] entire backend tree is structurally sound:
+   - 841 Python files parse cleanly
+   - 58 migrations form a single linear chain
+   - 100 main.py import bindings all resolve
+   - 24 recent-sprint files contain expected symbols
+   - 49 routers all mounted

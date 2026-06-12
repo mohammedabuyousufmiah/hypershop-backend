@@ -1,0 +1,19 @@
+# Grafana dashboard auto-provisioning.
+#
+# Points at /var/lib/grafana/dashboards which is bind-mounted from
+# docs/grafana/ in the compose overlay. Drop a new *.json there and
+# Grafana picks it up on the next ``updateIntervalSeconds``.
+
+apiVersion: 1
+
+providers:
+  - name: hypershop
+    orgId: 1
+    folder: Hypershop
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

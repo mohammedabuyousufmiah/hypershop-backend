@@ -1,0 +1,31 @@
+# Local-dev Prometheus scrape config.
+#
+# Mounted read-only into the prometheus container by
+# docker-compose.observability.yml. Scrape interval is 15 s — fine for a
+# single-node dev stack; production should override with a managed
+# Prometheus / Mimir / Grafana Cloud and tune accordingly.
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: hypershop-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          service: hypershop-api
+          env: dev
+
+  # Worker exposes no HTTP today — ARQ doesn't ship a metrics server.
+  # The api process owns the Prometheus scrape; outbox + cron metrics
+  # are produced via DB-derived collectors registered there.
+  # If a future change adds a worker-side HTTP server, add a
+  # ``hypershop-worker`` job here pointing at the right port.
+
+  # Self-scrape so the Prometheus health is visible in its own UI.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -1,0 +1,52 @@
+# Local storefront demo override. Merge AFTER base + override:
+#   -f docker-compose.yml -f docker-compose.override.yml -f docker-compose.localdemo.yml
+# - publish only :8002 (avoid ShipLogix on :8000)
+# - no --reload (WatchFiles stalls over the 9p Windows mount)
+# - DROP the ./app bind mount: importing 67 modules over /mnt/c (9p) is very
+#   slow and blows the healthcheck window. Use the app already COPYed into the
+#   image (fast container FS) instead.
+# - restart: unless-stopped so the stack self-heals when the WSL VM/engine cycles
+# - postgres/redis NOT published to host (mirrored mode would clash on Windows)
+services:
+  postgres:
+    restart: unless-stopped
+    ports: !override []
+  redis:
+    restart: unless-stopped
+    ports: !override []
+  api:
+    restart: unless-stopped
+    # Bigger start_period — the 70-module boot takes ~60-90s on this dev box and
+    # the base image's 15s start_period blows the window, triggering a SIGTERM
+    # cycle. Increase to 180s (probes only fail after boot completes).
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/api/v1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 5
+    ports: !override
+      - "8002:8000"
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    volumes: !override
+      - hypershop_product_videos:/var/hypershop/product_videos
+    environment:
+      # Deps install to /install (pip --prefix); python must see them.
+      PYTHONPATH: "/app:/install/lib/python3.12/site-packages"
+      # Fewer workers → faster boot on the dev box (4 workers × 70 modules
+      # blows the healthcheck start window under load).
+      WEB_CONCURRENCY: "2"
+      CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://localhost:3002,http://127.0.0.1:3002,http://localhost:7891,http://127.0.0.1:7891"
+      # AI voice/chat + ASR + KB embeddings (customer_care). Local demo only.
+      # Provide the key via the host env or a local .env (NEVER hardcode it
+      # here — it would land in git history). AI_PROVIDER selects the chain —
+      # without it the factory binds NotConfiguredProvider even with a key.
+      AI_PROVIDER: "openai"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_MODEL: "gpt-4o-mini"
+      OPENAI_MODEL_DEFAULT: "gpt-4o-mini"
+      # SBC / SIM-gateway for the agent softphone (clears sbc_not_configured).
+      # ⚠️ DEMO PLACEHOLDERS — replace with your real SBC / GoIP-GSM gateway
+      # WebRTC URI + SIP realm (local BD SIM) for calls to actually connect.
+      BL_HUB_WS_URI: "wss://sbc.hub.banglalink.net:7443/ws"
+      BL_HUB_SIP_DOMAIN: "sip.hub.banglalink.net"

@@ -1,0 +1,61 @@
+name: loadtest
+
+# Manually triggered — load tests are expensive in time AND in noise
+# against a real environment, so we don't run them on every push. Hit
+# the "Run workflow" button on the Actions tab to fire one off.
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: 'Target API base URL (no trailing slash)'
+        required: true
+        default: 'http://localhost:8000'
+      scenario:
+        description: 'Which scenario'
+        required: true
+        default: 'baseline'
+        type: choice
+        options:
+          - baseline
+          - stress
+          - soak
+      duration_override_seconds:
+        description: 'Override scenario duration (seconds; leave empty for the script default)'
+        required: false
+        default: ''
+
+jobs:
+  loadtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+            | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6
+          k6 version
+
+      - name: Run scenario
+        run: |
+          mkdir -p loadtest/results
+          ARGS="-e API=${{ inputs.api_url }}"
+          if [ -n "${{ inputs.duration_override_seconds }}" ]; then
+            ARGS="$ARGS --duration ${{ inputs.duration_override_seconds }}s"
+          fi
+          k6 run $ARGS loadtest/k6-${{ inputs.scenario }}.js
+
+      - name: Upload results JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loadtest-${{ inputs.scenario }}-${{ github.run_id }}
+          path: loadtest/results/*.json
+          if-no-files-found: warn
+          retention-days: 14

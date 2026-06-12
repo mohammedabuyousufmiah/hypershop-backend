@@ -1,0 +1,10 @@
+UPDATE product_media SET url='/products/women-01.png' WHERE product_id='fa4edb73-06e6-424e-898f-9f511b7ee9f0';
+UPDATE product_media SET url='/products/women-02.png' WHERE product_id='86e4b03b-ff8e-482d-97e8-5befcfa14bec';
+UPDATE product_media SET url='/products/women-03.png' WHERE product_id='0d471345-f630-4d19-83e5-983053acbc7d';
+UPDATE product_media SET url='/products/women-04.png' WHERE product_id='f5ad68b3-f12e-4997-ac07-30c717c4f3a1';
+UPDATE product_media SET url='/products/women-05.png' WHERE product_id='8f6781ff-c12a-4910-a8df-f28876407f18';
+UPDATE product_media SET url='/products/women-06.png' WHERE product_id='91e524ab-6368-463c-a428-8bea6b524a44';
+UPDATE product_media SET url='/products/women-07.png' WHERE product_id='5bbc8b5e-9b48-43a6-b7ec-a3267f126137';
+UPDATE product_media SET url='/products/women-08.png' WHERE product_id='3d1cda0d-2d52-4ffb-a77e-7d4496e5c361';
+UPDATE product_media SET url='/products/women-09.png' WHERE product_id='4909896a-a378-4737-af8d-495c149b04c6';
+UPDATE product_media SET url='/products/women-10.png' WHERE product_id='5feb59ce-24a9-418d-9122-406ada29a1bf';

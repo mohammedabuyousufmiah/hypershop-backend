@@ -1,0 +1,210 @@
+name: ci
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: lint + type + audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check app tests
+      - run: ruff format --check app tests
+      - run: mypy app
+      - run: bandit -q -r app
+      - run: pip-audit --strict --ignore-vuln GHSA-WJ6H-64FC-37MP || pip-audit --strict
+      # 7-contract rule (see scripts/MODULE_GOVERNANCE.md). Fails on any
+      # non-grandfathered module that doesn't score 7/7 across:
+      # api, perms, dashboard, sidebar, audit, tests, openapi.
+      - run: python -m scripts.check_module_contracts --strict --skip-grandfather
+
+  test:
+    name: tests (testcontainers)
+    runs-on: ubuntu-latest
+    needs: static
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: pytest --cov=app --cov-report=xml --cov-fail-under=80
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage.xml
+
+  build:
+    name: docker build
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: api image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          tags: hypershop-api:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.worker
+          push: false
+          tags: hypershop-worker:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  prod_smoke:
+    # Boots the FULL prod stack via docker-compose.prod.yml + confirms
+    # every service is healthy + the migrate/bootstrap one-shots exit 0.
+    # Exercises the live wiring that unit tests can't catch (env-driven
+    # provider binding, alembic chain, healthchecks, gunicorn boot,
+    # pg_backup cron, etc.).
+    name: prod-up smoke
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compose .env with hermetic random secrets
+        run: |
+          set -e
+          cp .env.prod.example .env
+          JWT=$(python3 -c "import secrets; print(secrets.token_urlsafe(48))")
+          PG_PW=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+          ADMIN_PW=$(python3 -c "import secrets; print(secrets.token_urlsafe(24))")
+          sed -i "s|^JWT_SECRET=.*|JWT_SECRET=$JWT|"               .env
+          sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$PG_PW|" .env
+          sed -i "s|^CORS_ORIGINS=.*|CORS_ORIGINS=http://localhost:3000|" .env
+          sed -i "s|^SMTP_HOST=.*|SMTP_HOST=smtp-relay.invalid|"   .env
+          sed -i "s|^SMTP_SENDER=.*|SMTP_SENDER=ci@hypershop.local|" .env
+          sed -i "s|^INITIAL_ADMIN_EMAIL=.*|INITIAL_ADMIN_EMAIL=ci-admin@hypershop.local|" .env
+          sed -i "s|^INITIAL_ADMIN_PASSWORD=.*|INITIAL_ADMIN_PASSWORD=$ADMIN_PW|" .env
+
+      - name: Validate compose YAML
+        run: docker compose -f docker-compose.prod.yml config > /dev/null
+
+      - name: Bring up prod stack (build + wait healthy)
+        run: |
+          docker compose -f docker-compose.prod.yml up -d --build --wait --wait-timeout 240
+          docker compose -f docker-compose.prod.yml ps
+
+      - name: Confirm migrate + bootstrap one-shots exited 0
+        run: |
+          docker compose -f docker-compose.prod.yml logs migrate
+          docker compose -f docker-compose.prod.yml logs bootstrap
+          docker compose -f docker-compose.prod.yml logs api | tail -100
+
+      - name: Hit /api/v1/health
+        run: |
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS http://localhost:8000/api/v1/health | grep -q '"status":"live"'; then
+              echo "OK: api healthy"
+              break
+            fi
+            sleep 3
+          done
+          curl -fsS http://localhost:8000/api/v1/health | grep -q '"status":"live"' || {
+            echo "FAIL: api did not become healthy"
+            docker compose -f docker-compose.prod.yml logs api
+            exit 1
+          }
+
+      - name: Smoke check public SEO endpoints (Module 34)
+        run: |
+          set -e
+          # robots.txt — must serve User-agent + Sitemap line.
+          curl -fsS http://localhost:8000/robots.txt | tee /tmp/robots.txt
+          grep -q 'User-agent: \*' /tmp/robots.txt
+          grep -q 'Sitemap:' /tmp/robots.txt
+          # sitemap.xml — valid-shape XML with at least the homepage URL.
+          curl -fsS http://localhost:8000/sitemap.xml | tee /tmp/sitemap.xml
+          head -1 /tmp/sitemap.xml | grep -q '<?xml'
+          grep -q '<urlset' /tmp/sitemap.xml
+          grep -q '<loc>' /tmp/sitemap.xml
+          # site-config — must include Pharmacy JSON-LD.
+          curl -fsS http://localhost:8000/api/v1/seo/site-config \
+            | tee /tmp/site-config.json | grep -q '"@type":"Pharmacy"'
+          # meta/home — canonical_url + jsonld array.
+          curl -fsS http://localhost:8000/api/v1/seo/meta/home \
+            | tee /tmp/meta-home.json
+          grep -q '"canonical_url":' /tmp/meta-home.json
+          grep -q '"jsonld":' /tmp/meta-home.json
+          # banners + blog list — {items: []} on a fresh DB.
+          curl -fsS http://localhost:8000/api/v1/seo/banners \
+            | grep -q '"items":'
+          curl -fsS http://localhost:8000/api/v1/seo/blog \
+            | grep -q '"items":'
+
+      - name: Smoke check auth-gated routes are wired (Modules 30-33)
+        run: |
+          set -e
+          # Each route MUST exist (not 404) and reject anonymous (401/403).
+          assert_unauth() {
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$1")
+            if [ "$code" = "401" ] || [ "$code" = "403" ]; then
+              echo "OK ($code): $1"
+            else
+              echo "FAIL ($code, expected 401/403): $1"
+              exit 1
+            fi
+          }
+          # Module 30 — Reporting
+          assert_unauth http://localhost:8000/api/v1/reports
+          assert_unauth http://localhost:8000/api/v1/admin/reporting/definitions
+          assert_unauth http://localhost:8000/api/v1/admin/reporting/executions
+          # Module 31 — Rider Routing
+          assert_unauth http://localhost:8000/api/v1/admin/rider-dispatch/live-map
+          assert_unauth http://localhost:8000/api/v1/admin/rider-dispatch/run-sheets
+          assert_unauth http://localhost:8000/api/v1/rider/run-sheet/current
+          # Module 32 — Rider Wallet
+          assert_unauth http://localhost:8000/api/v1/admin/rider-wallets
+          assert_unauth http://localhost:8000/api/v1/admin/rider-wallets/blocked
+          assert_unauth http://localhost:8000/api/v1/rider/wallet
+          # Module 33 — Supplier Payments
+          assert_unauth http://localhost:8000/api/v1/admin/supplier-payments/queue
+          assert_unauth http://localhost:8000/api/v1/admin/supplier-payments/recommended
+          assert_unauth http://localhost:8000/api/v1/admin/supplier-payments/workflows
+
+      - name: Confirm bootstrap seeded reports + workflows
+        run: |
+          set -e
+          # Read DB credentials from compose .env so we use the right user.
+          source .env
+          # Module 30 — 12 default report definitions + role policies.
+          REP_COUNT=$(docker compose -f docker-compose.prod.yml exec -T postgres \
+            psql -U "$POSTGRES_USER" -d hypershop -tAc \
+            'select count(*) from report_definitions')
+          echo "report_definitions: $REP_COUNT"
+          test "$REP_COUNT" -ge 12
+          # Module 33 — 2 approval workflows (standard + high_value).
+          WF_COUNT=$(docker compose -f docker-compose.prod.yml exec -T postgres \
+            psql -U "$POSTGRES_USER" -d hypershop -tAc \
+            'select count(*) from supplier_payment_approval_workflows')
+          echo "approval_workflows: $WF_COUNT"
+          test "$WF_COUNT" -eq 2
+
+      - name: Tear down (always)
+        if: always()
+        run: docker compose -f docker-compose.prod.yml down -v --remove-orphans

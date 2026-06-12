@@ -1,0 +1,69 @@
+FROM python:3.12-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+RUN pip install --upgrade pip && \
+    pip install --prefix=/install \
+      "pydantic==2.10.4" "pydantic-settings==2.7.1" "email-validator==2.2.0" \
+      "sqlalchemy[asyncio]==2.0.36" "asyncpg==0.30.0" \
+      "redis==5.2.1" "arq==0.26.3" \
+      "cryptography==44.0.0" \
+      "structlog==24.4.0" "httpx==0.28.1" "h2==4.1.0" "tenacity==9.0.0" \
+      "aiosmtplib==3.0.2" "jinja2==3.1.5" \
+      "boto3>=1.34,<2" \
+      "prometheus-client>=0.20,<1" \
+      "opentelemetry-api>=1.27,<2" "opentelemetry-sdk>=1.27,<2" \
+      "opentelemetry-exporter-otlp-proto-http>=1.27,<2" \
+      "opentelemetry-instrumentation-sqlalchemy>=0.48b0,<1" \
+      "opentelemetry-instrumentation-httpx>=0.48b0,<1" \
+      "opentelemetry-instrumentation-redis>=0.48b0,<1" \
+      "openai>=1.40,<2"
+
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    PATH=/install/bin:$PATH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    # FFmpeg + ffprobe for product-video processing (Module 35).
+    # Worker-only — the api image stays slim because it never shells
+    # out to ffmpeg.
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r app --gid 1000 \
+    && useradd -r -g app --uid 1000 --home-dir /app --shell /sbin/nologin app \
+    # Pre-create persistent-volume mountpoints with correct ownership.
+    # Worker shares the same volumes as api (PDFs, POD photos, etc.) so
+    # cron jobs can read/write the same artefact tree under read_only rootfs.
+    && mkdir -p /var/hypershop/prescriptions \
+                /var/hypershop/doctor_rx_pdfs \
+                /var/hypershop/delivery_pod \
+                /var/hypershop/reports \
+                /var/hypershop/product_videos \
+    && chown -R app:app /var/hypershop
+
+COPY --from=builder /install /install
+
+WORKDIR /app
+COPY --chown=app:app app ./app
+
+# Pre-compile to .pyc for fast worker cold start. See Dockerfile (api) for
+# the same step + rationale.
+RUN PYTHONDONTWRITEBYTECODE= python -m compileall -q -j 0 /app/app \
+    && chown -R app:app /app/app
+
+USER app
+
+CMD ["arq", "app.worker.WorkerSettings"]

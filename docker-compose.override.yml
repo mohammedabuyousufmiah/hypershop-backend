@@ -1,0 +1,14 @@
+# Local smoke/test override (auto-merged by docker compose).
+# 1) Fixes base Dockerfile: PYTHONPATH must include /install site-packages.
+# 2) Mounts ./scripts (seed) and ./tests (pytest bootstrap) — neither is COPYed
+#    into the image.
+services:
+  api:
+    environment:
+      PYTHONPATH: /install/lib/python3.12/site-packages:/app
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./tests:/app/tests:ro
+  worker:
+    environment:
+      PYTHONPATH: /install/lib/python3.12/site-packages:/app

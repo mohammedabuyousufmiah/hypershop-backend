@@ -1,0 +1,30 @@
+# Ingest plan for Wikipedia-sourced brand product photos.
+#
+# Filename-match fails because the synthetic catalog has no
+# model-level granularity (catalog says "DJI Drone" not
+# "DJI Mavic Pro"). Fall back to brand-scoped sequential
+# assignment so each photo lands on a real DJI/Samsung/etc.
+# product, not a random women's-fashion item.
+
+defaults:
+  position: 0
+  match_mode: sequential
+
+jobs:
+  - folder: "C:/Users/imyou/AppData/Local/Temp/wiki_photos/dji"
+    brand_slug: dji
+
+  - folder: "C:/Users/imyou/AppData/Local/Temp/wiki_photos/samsung"
+    brand_slug: samsung
+
+  - folder: "C:/Users/imyou/AppData/Local/Temp/wiki_photos/xiaomi"
+    brand_slug: xiaomi
+
+  - folder: "C:/Users/imyou/AppData/Local/Temp/wiki_photos/asus"
+    brand_slug: asus
+
+  - folder: "C:/Users/imyou/AppData/Local/Temp/wiki_photos/canon"
+    brand_slug: canon
+
+  - folder: "C:/Users/imyou/AppData/Local/Temp/wiki_photos/apple"
+    brand_slug: apple

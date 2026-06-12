@@ -1,0 +1,57 @@
+# Grandfather list - modules with pre-existing contract gaps.
+# Snapshot 2026-05-17 - kept exempt from --strict CI gate.
+# Modules NOT listed here must score 7/7. New modules MUST score 7/7.
+# Remove a name from this list once it reaches 7/7 to keep it that way.
+
+admin_config
+admin_v3_stubs
+affiliates
+ai
+analytics
+bi
+cart
+catalog
+checkout
+compliance
+coupons
+customer_care
+dashboard
+deliveries
+delivery
+doctor_rx
+feature_flags
+finance
+formulary
+fraud
+funnel
+gift_cards
+iam
+invoice_dispatch
+kpi_dashboard
+live_shopping
+loyalty
+marketing
+mobile
+notifications
+packing
+pharmacy_dashboard
+prescriptions
+product_qa
+product_videos
+push
+referrals
+reminders
+returns
+reviews
+rider_routing
+rider_wallet
+search
+sellers
+seo
+subscriptions
+supplier_payments
+support_tickets
+tax_rules
+wallet
+whatsapp_webhook
+wishlist

@@ -1,0 +1,58 @@
+# ============================================================================
+# Hypershop backend — Docker build context filter
+# ============================================================================
+# v25 fix: the bare ``dist`` rule used to exclude the seller PWA + the
+# customer-care PWA prod builds (which live at
+# ``app/modules/sellers/_frontend_src/dist`` and
+# ``app/modules/customer_care/_frontend_src/dist`` respectively). Those
+# dist folders are the SHIPPED frontends — without them the /seller/ and
+# /customercare/ routes fall back to the "build me" placeholder HTML.
+#
+# Fix: anchor ``dist`` / ``build`` to the project ROOT only (with the
+# leading slash); shipped PWA dist folders deeper in the tree pass
+# through.
+# ============================================================================
+
+# Version control / CI scaffolding
+.git
+.github
+
+# Python build artefacts
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+coverage.xml
+
+# Env files — never bake secrets into the image. .env.example is the
+# only env file allowed in.
+.env
+.env.*
+!.env.example
+
+# Markdown — let only the top-level README into the image; docs/CHANGELOGs
+# are not needed at runtime.
+*.md
+!README.md
+
+# Frontend dev dirs (these stay on the dev box, never in the image)
+node_modules
+
+# IDE / OS noise
+.idea
+.vscode
+.DS_Store
+
+# Root-only build / dist artefacts (NOT the shipped PWA dists deeper
+# in app/modules/*/_frontend_src/dist — those need to make it into
+# the image so /seller/ and /customercare/ serve real HTML).
+/dist
+/build
+
+# Test suites — never executed inside the image
+tests

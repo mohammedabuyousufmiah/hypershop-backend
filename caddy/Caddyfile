@@ -1,0 +1,48 @@
+{
+	email {env.ACME_EMAIL}
+	# Switch to `acme_ca https://acme-staging-v02.api.letsencrypt.org/directory`
+	# while testing to avoid hitting Let's Encrypt prod rate limits.
+}
+
+# Observability fragment — only imported when the file exists (it's
+# mounted only by docker-compose.observability.prod.yml). Caddy treats
+# a missing import as fatal, so we use the optional `try_files`-style
+# pattern with a glob: a missing file matches zero entries silently.
+import Caddyfile.observability*
+
+{env.API_DOMAIN} {
+	encode zstd gzip
+
+	# Belt-and-braces transport-layer headers in addition to the app's
+	# own SecurityHeadersMiddleware. CSP is set by the app — don't
+	# duplicate here or browsers see two policies.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options    "nosniff"
+		Referrer-Policy           "strict-origin-when-cross-origin"
+	}
+
+	# Tighten what we proxy: only API paths and OpenAPI docs.
+	@api {
+		path /api/* /docs /redoc /openapi.json
+	}
+	handle @api {
+		reverse_proxy api:8000 {
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Real-IP {remote_host}
+			transport http {
+				dial_timeout            5s
+				response_header_timeout 30s
+			}
+			health_uri      /api/v1/health
+			health_interval 20s
+			health_timeout  3s
+		}
+	}
+
+	# Anything else → 404, no leakage of internal endpoints.
+	handle {
+		respond "Not found" 404
+	}
+}

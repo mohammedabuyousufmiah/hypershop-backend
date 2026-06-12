@@ -1,0 +1,120 @@
+# Hypershop backend — Render Blueprint (Infrastructure as Code).
+#
+# One file provisions the whole production stack:
+#   • hypershop-api      — FastAPI web service (Docker, gunicorn+uvicorn)
+#   • hypershop-worker    — ARQ background worker (Docker)
+#   • hypershop-postgres  — managed Postgres 16
+#   • hypershop-redis     — managed Redis (Render "Key Value"), job queue
+#
+# Deploy: push this repo to GitHub → Render Dashboard → New → Blueprint →
+# pick the repo. Render reads this file and creates everything. Then set
+# the `sync: false` secrets in the dashboard and add the custom domain.
+# Full walkthrough: see DEPLOY_RENDER.md.
+
+databases:
+  - name: hypershop-postgres
+    databaseName: hypershop
+    user: hypershop
+    plan: basic-256mb        # always-on; bump to standard for more RAM/IOPS
+    region: singapore        # closest Render region to Bangladesh
+    postgresMajorVersion: "16"
+
+services:
+  # ── Managed Redis (job queue + cache). noeviction so ARQ jobs are never
+  #    dropped under memory pressure. Internal-only (no public IP). ──────
+  - type: keyvalue
+    name: hypershop-redis
+    plan: starter
+    region: singapore
+    maxmemoryPolicy: noeviction
+    ipAllowList: []          # empty = reachable only from Render services
+
+  # ── API web service ────────────────────────────────────────────────
+  - type: web
+    name: hypershop-api
+    runtime: docker
+    region: singapore
+    plan: starter            # always-on; free plan cold-starts, don't use for an API
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/v1/health
+    # Runs migrations once before each deploy goes live (replaces the
+    # compose `migrate` service). If it fails, the deploy is aborted and
+    # the old version keeps serving.
+    preDeployCommand: alembic upgrade head
+    autoDeployTrigger: commit
+    envVars:
+      - fromGroup: hypershop-shared
+      - key: DATABASE_URL
+        fromDatabase:
+          name: hypershop-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: hypershop-redis
+          property: connectionString
+
+  # ── ARQ worker (no inbound port) ───────────────────────────────────
+  - type: worker
+    name: hypershop-worker
+    runtime: docker
+    region: singapore
+    plan: starter
+    dockerfilePath: ./Dockerfile.worker
+    dockerContext: .
+    autoDeployTrigger: commit
+    envVars:
+      - fromGroup: hypershop-shared
+      - key: DATABASE_URL
+        fromDatabase:
+          name: hypershop-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: hypershop-redis
+          property: connectionString
+
+# ── Shared env: identical across api + worker so JWT_SECRET (and creds)
+#    match. JWT_SECRET is generated once by Render and shared. The
+#    `sync: false` rows are filled in the dashboard (never committed).
+#    DATABASE_SYNC_URL is auto-derived from DATABASE_URL by config.py's
+#    normalizer, so it isn't listed here. ────────────────────────────
+envVarGroups:
+  - name: hypershop-shared
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: API_DOMAIN
+        value: api.hypershop.com.bd
+      - key: API_PREFIX
+        value: /api/v1
+      - key: WEB_CONCURRENCY
+        value: "4"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: JWT_SECRET
+        generateValue: true            # one strong secret, shared by both services
+      # ── secrets / per-deploy values — set these in the Render dashboard ──
+      - key: CORS_ORIGINS               # e.g. https://hypershop.com.bd,https://admin.hypershop.com.bd
+        sync: false
+      - key: INITIAL_ADMIN_EMAIL
+        sync: false
+      - key: INITIAL_ADMIN_PASSWORD
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_SENDER
+        sync: false
+      # Demo/staging only: set true so rider phone-OTP accepts any 6-digit
+      # code (no SMS provider needed). Leave UNSET for real production —
+      # otherwise anyone can log in as any phone. See MOBILE_DEMO_LOGINS.md.
+      - key: OTP_DEV_BYPASS
+        sync: false

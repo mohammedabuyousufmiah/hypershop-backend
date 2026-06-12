@@ -1,0 +1,107 @@
+# Curated Wikipedia product hero shots — sourced 2026-05-25.
+#
+# Strategy: Wikipedia ARTICLE pages (not Commons categories) carry
+# clean product hero shots. Categories tend to dump editorial / event
+# photography that's useless for catalog.
+#
+# URLs include /thumb/ prefix — downloader auto-strips to fetch
+# original full-resolution. Filenames are normalised to brand_model
+# pattern so filename-fuzzy-match can pair them to catalog SKUs.
+#
+# Run:
+#   python -m scripts.download_brand_photos \
+#       --manifest scripts/brand_photos_wikipedia.yaml \
+#       --dest "C:/staging/photos/"
+#
+# Then ingest per brand:
+#   python -m scripts.ingest_photos \
+#       --folder "C:/staging/photos/samsung/" \
+#       --brand-slug samsung --match-mode filename --threshold 0.35
+
+defaults:
+  dest: "C:/staging/photos"
+
+items:
+  # ---- Samsung (Galaxy S24 series) ----
+  - brand_slug: samsung
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/0/05/Samsung_Galaxy_S24%2C_Sperrbildschirm.JPG/250px-Samsung_Galaxy_S24%2C_Sperrbildschirm.JPG"
+    filename: "samsung_galaxy_s24_lock_screen.jpg"
+  - brand_slug: samsung
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fe/Samsung_Galaxy_s24_series.jpg/250px-Samsung_Galaxy_s24_series.jpg"
+    filename: "samsung_galaxy_s24_series_lineup.jpg"
+
+  # ---- DJI (Mavic series — 12 hero shots) ----
+  - brand_slug: dji
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2f/DJI_Mavic_Pro.jpg/330px-DJI_Mavic_Pro.jpg"
+    filename: "dji_mavic_pro.jpg"
+  - brand_slug: dji
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7c/CP%2B2017-23_%2832611662214%29.jpg/250px-CP%2B2017-23_%2832611662214%29.jpg"
+    filename: "dji_mavic_pro_folded.jpg"
+  - brand_slug: dji
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/9/93/DJI_L1P_Mavic_2_Pro_%282-2-2024%29.jpg/250px-DJI_L1P_Mavic_2_Pro_%282-2-2024%29.jpg"
+    filename: "dji_mavic_2_pro_flight.jpg"
+  - brand_slug: dji
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1f/DJI_Mavic_3M_Multispectral_FA373WYPN9_%284-9-2024%29_%28cropped%29.jpg/250px-DJI_Mavic_3M_Multispectral_FA373WYPN9_%284-9-2024%29_%28cropped%29.jpg"
+    filename: "dji_mavic_3m_multispectral.jpg"
+  - brand_slug: dji
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a8/DJI_-_Drohne_Mavic_4_Pro.JPG/250px-DJI_-_Drohne_Mavic_4_Pro.JPG"
+    filename: "dji_mavic_4_pro_flight.jpg"
+  - brand_slug: dji
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/b/bc/DJI_Mavic_2_Pro_and_Mavic_Pro_%28cropped%29.jpg/250px-DJI_Mavic_2_Pro_and_Mavic_Pro_%28cropped%29.jpg"
+    filename: "dji_mavic_2_pro_vs_mavic_pro.jpg"
+  - brand_slug: dji
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/8/89/DJI_-_Drohne_Mavic_3.JPG/250px-DJI_-_Drohne_Mavic_3.JPG"
+    filename: "dji_mavic_3_drone_flight.jpg"
+  - brand_slug: dji
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/e/ed/2024-10-_DJI_Mavic_3_Pro_-_01.jpg/250px-2024-10-_DJI_Mavic_3_Pro_-_01.jpg"
+    filename: "dji_mavic_3_pro_triple_camera.jpg"
+  - brand_slug: dji
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/5/5b/DJI_M3T_Mavic_3T_Thermal_%28FA3TEKXHYY%29_%284-9-2024%29.jpg/250px-DJI_M3T_Mavic_3T_Thermal_%28FA3TEKXHYY%29_%284-9-2024%29.jpg"
+    filename: "dji_mavic_3t_thermal.jpg"
+
+  # ---- Xiaomi (14 series) ----
+  - brand_slug: xiaomi
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c5/23116PN5BC.jpg/250px-23116PN5BC.jpg"
+    filename: "xiaomi_14_pro_front.jpg"
+  - brand_slug: xiaomi
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/7/71/%E5%B0%8F%E7%B1%B314_Pro%E5%92%8C%E5%B0%8F%E7%B1%B314%EF%BC%882024%E5%B9%B42%E6%9C%8820%E6%97%A5%EF%BC%89.jpg/250px-%E5%B0%8F%E7%B1%B314_Pro%E5%92%8C%E5%B0%8F%E7%B1%B314%EF%BC%882024%E5%B9%B42%E6%9C%8820%E6%97%A5%EF%BC%89.jpg"
+    filename: "xiaomi_14_and_14_pro_color_options.jpg"
+  - brand_slug: xiaomi
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e8/HK_%E4%B8%AD%E7%92%B0_Central_%E7%9A%87%E5%90%8E%E5%A4%A7%E9%81%93%E4%B8%AD_33_Queen%27s_Road_Central_shop_%E8%B1%90%E6%BE%A4%E9%9B%BB%E5%99%A8_Fortress_Store_%E6%89%8B%E6%A9%9F_smartphone_XiaoMi_14_Ultra_watch_May_2024_R12S_01.jpg/250px-HK_%E4%B8%AD%E7%92%B0_Central_%E7%9A%87%E5%90%8E%E5%A4%A7%E9%81%93%E4%B8%AD_33_Queen%27s_Road_Central_shop_%E8%B1%90%E6%BE%A4%E9%9B%BB%E5%99%A8_Fortress_Store_%E6%89%8B%E6%A9%9F_smartphone_XiaoMi_14_Ultra_watch_May_2024_R12S_01.jpg"
+    filename: "xiaomi_14_ultra_and_watch.jpg"
+
+  # ---- Asus (ROG Phone) ----
+  - brand_slug: asus
+    url: "https://upload.wikimedia.org/wikipedia/en/thumb/9/93/Rog_Phone%2C_Gaming_phone_of_Asus.jpg/250px-Rog_Phone%2C_Gaming_phone_of_Asus.jpg"
+    filename: "asus_rog_phone_with_cooler.jpg"
+
+  # ---- Canon (EOS R5) ----
+  - brand_slug: canon
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/7/74/Canon_EOS_R5_%28cropped%29.jpg/250px-Canon_EOS_R5_%28cropped%29.jpg"
+    filename: "canon_eos_r5_body.jpg"
+  - brand_slug: canon
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/9/93/Canon_R5_mit_RF_85_1.2-8049.jpg/250px-Canon_R5_mit_RF_85_1.2-8049.jpg"
+    filename: "canon_eos_r5_with_rf85mm_lens.jpg"
+  - brand_slug: canon
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3b/Canon_R5_und_RF_800_11-8062.jpg/250px-Canon_R5_und_RF_800_11-8062.jpg"
+    filename: "canon_eos_r5_with_rf800mm_lens.jpg"
+  - brand_slug: canon
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/7/76/Canon_R5_mit_RF_35_1.8-8051.jpg/250px-Canon_R5_mit_RF_35_1.8-8051.jpg"
+    filename: "canon_eos_r5_with_rf35mm_lens.jpg"
+  - brand_slug: canon
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/a/aa/Rear_view_of_the_Canon_EOS_R5.jpg/250px-Rear_view_of_the_Canon_EOS_R5.jpg"
+    filename: "canon_eos_r5_rear_view.jpg"
+  - brand_slug: canon
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9c/Top_view_of_the_Canon_EOS_R5.jpg/250px-Top_view_of_the_Canon_EOS_R5.jpg"
+    filename: "canon_eos_r5_top_view.jpg"
+
+  # ---- iPhone 15 series ----
+  - brand_slug: apple
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/9/93/IPhone_Series.jpg/250px-IPhone_Series.jpg"
+    filename: "apple_iphone_15_series_front_back.jpg"
+  - brand_slug: apple
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2b/IPhone_15.jpeg/120px-IPhone_15.jpeg"
+    filename: "apple_iphone_15_6_1_inch.jpg"
+  - brand_slug: apple
+    url: "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2b/IPhone_15_Plus.jpeg/120px-IPhone_15_Plus.jpeg"
+    filename: "apple_iphone_15_plus_6_7_inch.jpg"

@@ -1,0 +1,32 @@
+"""Constants for the seller rating module."""
+from __future__ import annotations
+
+TIER_PLATINUM = "platinum"
+TIER_GOLD = "gold"
+TIER_SILVER = "silver"
+TIER_STANDARD = "standard"
+TIER_POOR = "poor"
+TIER_SUSPENDED = "suspended"
+
+ALL_TIERS = (
+    TIER_PLATINUM,
+    TIER_GOLD,
+    TIER_SILVER,
+    TIER_STANDARD,
+    TIER_POOR,
+    TIER_SUSPENDED,
+)
+
+WEIGHT_ON_TIME = 0.25
+WEIGHT_RETURN = 0.15
+WEIGHT_DISPUTE = 0.15
+WEIGHT_RESPONSE = 0.10
+WEIGHT_REVIEW = 0.25
+WEIGHT_VOLUME = 0.10
+
+LOOKBACK_DAYS = 30
+MIN_ORDERS_FOR_FULL_SCORE = 20
+
+NEUTRAL_COMPONENT_SCORE = 50.0
+
+MAX_SELLERS_PER_TICK = 500

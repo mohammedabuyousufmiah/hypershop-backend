@@ -1,0 +1,90 @@
+# Observability overlay — opt-in local-dev tracing + metrics dashboards.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up
+#
+# Adds three services on top of the base stack:
+#   - jaeger      → OTLP receiver + trace UI at http://localhost:16686
+#   - prometheus  → scrapes api:8000/metrics, UI at http://localhost:9090
+#   - grafana     → admin / admin, UI at http://localhost:3001 (3000 is owned
+#                   by the customer-web frontend on most dev machines)
+#
+# The api + worker auto-export when ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set
+# in the environment. This overlay sets that for both processes by
+# extending each service rather than adding a wrapper. Prometheus scrapes
+# happen regardless of OTEL — they need no app-side opt-in beyond the
+# ``/metrics`` endpoint that ``app/core/metrics.py`` already mounts.
+#
+# Why an overlay rather than baking into docker-compose.yml:
+#   - Most dev sessions don't need traces or dashboards; pulling Jaeger +
+#     Prometheus + Grafana on every fresh checkout adds ~400 MB and ~15 s
+#     to the cold-boot path.
+#   - Production observability lives outside compose (managed Tempo,
+#     Honeycomb, Datadog, etc.) — keeping the dev-only stack separate
+#     prevents config drift between this file and the prod runbook.
+
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # UI
+      - "4318:4318"     # OTLP HTTP receiver — api + worker post here
+
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    ports:
+      - "9090:9090"
+    depends_on:
+      api: { condition: service_started }
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # Disable Grafana's first-run "create your account" + telemetry —
+      # fully local dev environment, every dev sees the same dashboards.
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docs/grafana:/var/lib/grafana/dashboards:ro
+      - hypershop_grafana:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      prometheus: { condition: service_started }
+
+  # Re-declare api + worker just to inject the OTLP env var. The base
+  # docker-compose.yml definitions otherwise apply unchanged — overlay
+  # composition merges this with the base block.
+  api:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: hypershop-api
+      OTEL_ENVIRONMENT: dev
+      OTEL_TRACES_SAMPLE_RATIO: "1.0"
+    depends_on:
+      jaeger: { condition: service_started }
+
+  worker:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: hypershop-worker
+      OTEL_ENVIRONMENT: dev
+      OTEL_TRACES_SAMPLE_RATIO: "1.0"
+    depends_on:
+      jaeger: { condition: service_started }
+
+volumes:
+  hypershop_grafana:

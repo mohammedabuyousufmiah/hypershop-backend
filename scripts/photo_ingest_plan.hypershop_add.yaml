@@ -1,0 +1,78 @@
+# Multi-folder ingest plan for HYPERSHOP ADD/* assets.
+#
+# All sources are anonymous stock images (filename = ChatGPT timestamp
+# or generic _Day1..N pattern), so we use sequential 1:1 assignment
+# against the matching catalog category. Newest unphotographed product
+# wins each slot.
+#
+# Skipped folders (not product imagery):
+#   - Promotional/       (marketing banners)
+#   - VIRAL TOPIC/       (social content)
+#   - BIKAS/             (brand assets / logos)
+#   - Vedio promotion/   (video files)
+#   - SEBA PHARMACY/     (different project)
+#
+# Run:
+#   python -m scripts.ingest_photos \
+#       --plan-file scripts/photo_ingest_plan.hypershop_add.yaml \
+#       --unmatched-csv scripts/hypershop_add_unmatched.csv
+
+defaults:
+  position: 0
+  match_mode: sequential
+
+jobs:
+  # ---- already covered batch (idempotent skip if re-run) ----
+  - folder: "C:/Users/imyou/OneDrive/Desktop/HYPERSHOP ADD/Hypershop product image/WOMEN FASHTION"
+    category_slug:
+      - womens-fashion
+      - womens-fashion-beauty
+
+  - folder: "C:/Users/imyou/OneDrive/Desktop/HYPERSHOP ADD/Hypershop product image/purches by categorie Image"
+    category_slug:
+      - womens-fashion-beauty
+      - womens-fashion
+    filename_overrides:
+      Beuty.png:
+        category_slug: beauty-fragrance
+      PrgnancePM.png:
+        category_slug: baby-maternity
+
+  # ---- new batch (10 folders, 254 images) ----
+  - folder: "C:/Users/imyou/OneDrive/Desktop/HYPERSHOP ADD/cosmetics_posts_campaign_updated"
+    category_slug:
+      - beauty-fragrance
+      - womens-fashion-beauty
+
+  - folder: "C:/Users/imyou/OneDrive/Desktop/HYPERSHOP ADD/electronics_promotional_posts"
+    category_slug:
+      - electronics
+      - home-appliances-ac
+
+  - folder: "C:/Users/imyou/OneDrive/Desktop/HYPERSHOP ADD/FASHION"
+    category_slug:
+      - mens-fashion
+      - womens-fashion
+
+  - folder: "C:/Users/imyou/OneDrive/Desktop/HYPERSHOP ADD/FERFUMES"
+    category_slug:
+      - beauty-fragrance
+
+  - folder: "C:/Users/imyou/OneDrive/Desktop/HYPERSHOP ADD/GADGET"
+    category_slug:
+      - mobile-gadgets
+      - computers-drones
+
+  - folder: "C:/Users/imyou/OneDrive/Desktop/HYPERSHOP ADD/GIFT ITEMS"
+    category_slug:
+      - home-decor-auto
+      - stationery
+
+  - folder: "C:/Users/imyou/OneDrive/Desktop/HYPERSHOP ADD/Mobile phone"
+    category_slug:
+      - mobile-gadgets
+
+  - folder: "C:/Users/imyou/OneDrive/Desktop/HYPERSHOP ADD/SHOES"
+    category_slug:
+      - mens-fashion-shoes
+      - mens-fashion

@@ -1,0 +1,566 @@
+name: hypershop-prod
+
+# Production compose file for single-host deployment.
+# Differences vs. docker-compose.yml (dev):
+#   - No source code bind-mounts (image is immutable)
+#   - No mailpit (uses real SMTP)
+#   - No port exposure for postgres/redis (internal network only)
+#   - gunicorn (no --reload) via the Dockerfile CMD
+#   - One-shot `migrate` service blocks `api` until alembic head is reached
+#   - restart policies, resource limits, log rotation
+#   - `${VAR:?...}` syntax fails fast if required secrets are unset
+#   - Persistent volumes for prescription/POD/PDF artefacts
+#
+# Usage:
+#   1. Place a production .env beside this file (NEVER commit it).
+#      Required vars are listed under each `${VAR:?...}` reference.
+#   2. docker compose -f docker-compose.prod.yml up -d --build
+#   3. Logs:    docker compose -f docker-compose.prod.yml logs -f api
+#   4. Update:  docker compose -f docker-compose.prod.yml up -d --build --no-deps api worker
+#
+# For multi-host or HA, lift this into k8s — the image, env contract,
+# and migration step all transfer 1:1.
+
+x-app-env: &app-env
+  ENVIRONMENT: production
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  SERVICE_NAME: hypershop-api
+  API_PREFIX: ${API_PREFIX:-/api/v1}
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}
+  DATABASE_SYNC_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-20}
+  DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-10}
+  REDIS_URL: redis://redis:6379/0
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET to a 32+ char random string}
+  JWT_ACCESS_TTL_SECONDS: ${JWT_ACCESS_TTL_SECONDS:-900}
+  JWT_REFRESH_TTL_SECONDS: ${JWT_REFRESH_TTL_SECONDS:-604800}
+  ARGON2_TIME_COST: ${ARGON2_TIME_COST:-3}
+  ARGON2_MEMORY_COST_KIB: ${ARGON2_MEMORY_COST_KIB:-65536}
+  ARGON2_PARALLELISM: ${ARGON2_PARALLELISM:-4}
+  RATE_LIMIT_LOGIN_PER_MINUTE: ${RATE_LIMIT_LOGIN_PER_MINUTE:-5}
+  RATE_LIMIT_OTP_PER_HOUR: ${RATE_LIMIT_OTP_PER_HOUR:-5}
+  RATE_LIMIT_REGISTER_PER_HOUR: ${RATE_LIMIT_REGISTER_PER_HOUR:-10}
+  OTP_LENGTH: ${OTP_LENGTH:-6}
+  OTP_TTL_SECONDS: ${OTP_TTL_SECONDS:-600}
+  OTP_MAX_ATTEMPTS: ${OTP_MAX_ATTEMPTS:-5}
+  PASSWORD_RESET_TTL_SECONDS: ${PASSWORD_RESET_TTL_SECONDS:-3600}
+  PASSWORD_MIN_LENGTH: ${PASSWORD_MIN_LENGTH:-12}
+  FAILED_LOGIN_LOCKOUT_THRESHOLD: ${FAILED_LOGIN_LOCKOUT_THRESHOLD:-10}
+  FAILED_LOGIN_LOCKOUT_SECONDS: ${FAILED_LOGIN_LOCKOUT_SECONDS:-900}
+  CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS to comma-separated list of allowed frontends}
+  SMTP_HOST: ${SMTP_HOST:?set SMTP_HOST}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+  SMTP_SENDER: ${SMTP_SENDER:?set SMTP_SENDER}
+  ARQ_QUEUE_NAME: ${ARQ_QUEUE_NAME:-hypershop:jobs}
+  # ----- Inventory -----
+  INVENTORY_DEFAULT_WAREHOUSE_CODE: ${INVENTORY_DEFAULT_WAREHOUSE_CODE:-MAIN}
+  INVENTORY_NEAR_EXPIRY_DAYS: ${INVENTORY_NEAR_EXPIRY_DAYS:-30}
+  INVENTORY_EXPIRY_CHECK_INTERVAL_MINUTES: ${INVENTORY_EXPIRY_CHECK_INTERVAL_MINUTES:-60}
+  # ----- Prescription / wallet / delivery file storage -----
+  # All three MUST resolve to mounted volumes (see `volumes:` below)
+  PRESCRIPTION_STORAGE_DIR: /var/hypershop/prescriptions
+  PRESCRIPTION_MAX_FILE_BYTES: ${PRESCRIPTION_MAX_FILE_BYTES:-10485760}
+  DOCTOR_RX_PDF_DIR: /var/hypershop/doctor_rx_pdfs
+  WALLET_CREDIT_LIFETIME_DAYS: ${WALLET_CREDIT_LIFETIME_DAYS:-30}
+  WALLET_ROLLOVER_PERCENT: ${WALLET_ROLLOVER_PERCENT:-0}
+  WALLET_CURRENCY: ${WALLET_CURRENCY:-BDT}
+  DELIVERY_POD_DIR: /var/hypershop/delivery_pod
+  DELIVERY_POD_MAX_FILE_BYTES: ${DELIVERY_POD_MAX_FILE_BYTES:-8388608}
+  DELIVERY_COD_AUTO_RECONCILE_TOLERANCE_CENTS: ${DELIVERY_COD_AUTO_RECONCILE_TOLERANCE_CENTS:-0}
+  # ----- Reporting platform (Module 30) -----
+  # Generated CSV/XLSX/PDF report files. Mounted volume below.
+  REPORT_STORAGE_DIR: /var/hypershop/reports
+  REPORT_SIGNED_URL_TTL_HOURS: ${REPORT_SIGNED_URL_TTL_HOURS:-24}
+  # Optional Bengali font for PDF exports (vendor a NotoSansBengali
+  # TTF in your image and point this at it). Empty = ASCII-only PDFs.
+  REPORT_PDF_BENGALI_FONT_PATH: ${REPORT_PDF_BENGALI_FONT_PATH:-}
+  # ----- Product page videos (Module 35) -----
+  # Originals + generated HLS + posters. Mounted volume below; same
+  # path on api + worker because the worker writes the HLS bundle and
+  # the api streams it via /api/v1/catalog/videos/files (when no CDN
+  # base URL is set).
+  PRODUCT_VIDEO_STORAGE_DIR: /var/hypershop/product_videos
+  PRODUCT_VIDEO_MAX_SIZE_MB: ${PRODUCT_VIDEO_MAX_SIZE_MB:-200}
+  PRODUCT_VIDEO_MAX_DURATION_SECONDS: ${PRODUCT_VIDEO_MAX_DURATION_SECONDS:-60}
+  PRODUCT_VIDEO_MAX_APPROVED_PER_PRODUCT: ${PRODUCT_VIDEO_MAX_APPROVED_PER_PRODUCT:-3}
+  PRODUCT_VIDEO_RAW_RETENTION_DAYS: ${PRODUCT_VIDEO_RAW_RETENTION_DAYS:-60}
+  PRODUCT_VIDEO_MAX_CONCURRENT_JOBS: ${PRODUCT_VIDEO_MAX_CONCURRENT_JOBS:-2}
+  # On-disk public URL base (used when Bunny is NOT configured).
+  # Ignored when BUNNY_PULL_ZONE_HOSTNAME is set — Bunny's CDN takes
+  # precedence. Empty = serve through the API.
+  PRODUCT_VIDEO_PUBLIC_BASE_URL: ${PRODUCT_VIDEO_PUBLIC_BASE_URL:-}
+  # ----- Cloudflare R2 (private raw originals) -----
+  R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+  R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+  R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+  R2_BUCKET_NAME: ${R2_BUCKET_NAME:-}
+  R2_PUBLIC_BASE_URL: ${R2_PUBLIC_BASE_URL:-}
+  R2_PRIVATE_PREFIX: ${R2_PRIVATE_PREFIX:-raw/product-videos/}
+  R2_PUBLIC_PREFIX: ${R2_PUBLIC_PREFIX:-public/product-videos/}
+  # ----- Bunny.net (public HLS + CDN) -----
+  BUNNY_STORAGE_ZONE_NAME: ${BUNNY_STORAGE_ZONE_NAME:-}
+  BUNNY_STORAGE_ACCESS_KEY: ${BUNNY_STORAGE_ACCESS_KEY:-}
+  BUNNY_STORAGE_REGION: ${BUNNY_STORAGE_REGION:-sg}
+  BUNNY_PULL_ZONE_HOSTNAME: ${BUNNY_PULL_ZONE_HOSTNAME:-}
+  BUNNY_PATH_PREFIX: ${BUNNY_PATH_PREFIX:-product-videos/}
+  # ----- Rider wallet (Module 32) -----
+  # Company's MFS account riders settle COD custody to (printed on
+  # every settlement claim row).
+  RIDER_WALLET_COMPANY_RECEIVER_ACCOUNT: ${RIDER_WALLET_COMPANY_RECEIVER_ACCOUNT:-017XXXXXXXX}
+  # ----- Supplier payment approval engine (Module 33) -----
+  # Bills above this BDT threshold require a 4th super-admin approval.
+  SUPPLIER_PAYMENT_HIGH_VALUE_THRESHOLD_BDT: ${SUPPLIER_PAYMENT_HIGH_VALUE_THRESHOLD_BDT:-500000.00}
+  # Comma-separated email lists for approval-needed notifications.
+  # Empty = no email sent (handler logs + returns).
+  SUPPLIER_PAYMENT_APPROVER_EMAILS_L1: ${SUPPLIER_PAYMENT_APPROVER_EMAILS_L1:-}
+  SUPPLIER_PAYMENT_APPROVER_EMAILS_L2: ${SUPPLIER_PAYMENT_APPROVER_EMAILS_L2:-}
+  SUPPLIER_PAYMENT_APPROVER_EMAILS_L3: ${SUPPLIER_PAYMENT_APPROVER_EMAILS_L3:-}
+  SUPPLIER_PAYMENT_APPROVER_EMAILS_L4: ${SUPPLIER_PAYMENT_APPROVER_EMAILS_L4:-}
+  SUPPLIER_PAYMENT_PROCUREMENT_EMAILS: ${SUPPLIER_PAYMENT_PROCUREMENT_EMAILS:-}
+  # ----- SEO + dynamic content (Module 34) -----
+  # SEO_SITE_URL MUST be the storefront origin (NOT the API origin).
+  SEO_SITE_NAME: ${SEO_SITE_NAME:-Hypershop}
+  SEO_SITE_URL: ${SEO_SITE_URL:-https://hypershop.example}
+  SEO_DEFAULT_OG_IMAGE: ${SEO_DEFAULT_OG_IMAGE:-}
+  SEO_PHARMACY_PHONE: ${SEO_PHARMACY_PHONE:-}
+  SEO_PHARMACY_LOCALITY: ${SEO_PHARMACY_LOCALITY:-Dhaka}
+  SEO_PHARMACY_COUNTRY: ${SEO_PHARMACY_COUNTRY:-BD}
+  # ----- Reminders -----
+  REMINDER_MORNING_HHMM: ${REMINDER_MORNING_HHMM:-08:00}
+  REMINDER_AFTERNOON_HHMM: ${REMINDER_AFTERNOON_HHMM:-14:00}
+  REMINDER_NIGHT_HHMM: ${REMINDER_NIGHT_HHMM:-21:00}
+  REMINDER_LOCAL_TZ_OFFSET_HOURS: ${REMINDER_LOCAL_TZ_OFFSET_HOURS:-6}
+  REMINDER_DISPATCH_INTERVAL_MINUTES: ${REMINDER_DISPATCH_INTERVAL_MINUTES:-5}
+  REMINDER_DISPATCH_BATCH_SIZE: ${REMINDER_DISPATCH_BATCH_SIZE:-200}
+  # ----- Finance -----
+  VAT_RATE: ${VAT_RATE:-0}
+  # ----- AI providers (default `none` → 502 with clear message) -----
+  AI_PROVIDER: ${AI_PROVIDER:-none}
+  AI_BACKUP_PROVIDERS: ${AI_BACKUP_PROVIDERS:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+  OPENAI_MODEL_DEFAULT: ${OPENAI_MODEL_DEFAULT:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+  ANTHROPIC_MODEL_DEFAULT: ${ANTHROPIC_MODEL_DEFAULT:-}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GEMINI_BASE_URL: ${GEMINI_BASE_URL:-}
+  GEMINI_MODEL_DEFAULT: ${GEMINI_MODEL_DEFAULT:-}
+  # ----- Formulary provider -----
+  FORMULARY_PROVIDER: ${FORMULARY_PROVIDER:-none}
+  FORMULARY_API_KEY: ${FORMULARY_API_KEY:-}
+  FORMULARY_BASE_URL: ${FORMULARY_BASE_URL:-}
+  # ----- Payment gateways (Module 22) -----
+  PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-none}
+  PAYMENT_DEFAULT_REDIRECT_BASE_URL: ${PAYMENT_DEFAULT_REDIRECT_BASE_URL:-}
+  PAYMENT_WEBHOOK_BASE_URL: ${PAYMENT_WEBHOOK_BASE_URL:-}
+  BKASH_APP_KEY: ${BKASH_APP_KEY:-}
+  BKASH_APP_SECRET: ${BKASH_APP_SECRET:-}
+  BKASH_USERNAME: ${BKASH_USERNAME:-}
+  BKASH_PASSWORD: ${BKASH_PASSWORD:-}
+  BKASH_BASE_URL: ${BKASH_BASE_URL:-}
+  BKASH_WEBHOOK_URL: ${BKASH_WEBHOOK_URL:-}
+  SSLCOMMERZ_STORE_ID: ${SSLCOMMERZ_STORE_ID:-}
+  SSLCOMMERZ_STORE_PASSWD: ${SSLCOMMERZ_STORE_PASSWD:-}
+  SSLCOMMERZ_BASE_URL: ${SSLCOMMERZ_BASE_URL:-}
+  SSLCOMMERZ_IS_SANDBOX: ${SSLCOMMERZ_IS_SANDBOX:-false}
+  SSLCOMMERZ_WEBHOOK_URL: ${SSLCOMMERZ_WEBHOOK_URL:-}
+  NAGAD_MERCHANT_ID: ${NAGAD_MERCHANT_ID:-}
+  NAGAD_MERCHANT_NUMBER: ${NAGAD_MERCHANT_NUMBER:-}
+  NAGAD_MERCHANT_PRIVATE_KEY_PEM: ${NAGAD_MERCHANT_PRIVATE_KEY_PEM:-}
+  NAGAD_PUBLIC_KEY_PEM: ${NAGAD_PUBLIC_KEY_PEM:-}
+  NAGAD_BASE_URL: ${NAGAD_BASE_URL:-}
+  NAGAD_IS_SANDBOX: ${NAGAD_IS_SANDBOX:-false}
+  NAGAD_CALLBACK_BASE_URL: ${NAGAD_CALLBACK_BASE_URL:-}
+  NAGAD_WEBHOOK_URL: ${NAGAD_WEBHOOK_URL:-}
+  ROCKET_MERCHANT_ID: ${ROCKET_MERCHANT_ID:-}
+  ROCKET_APP_KEY: ${ROCKET_APP_KEY:-}
+  ROCKET_APP_SECRET: ${ROCKET_APP_SECRET:-}
+  ROCKET_BASE_URL: ${ROCKET_BASE_URL:-}
+  ROCKET_IS_SANDBOX: ${ROCKET_IS_SANDBOX:-false}
+  ROCKET_WEBHOOK_URL: ${ROCKET_WEBHOOK_URL:-}
+  # ----- SMS provider (Module 23) -----
+  SMS_PROVIDER: ${SMS_PROVIDER:-none}
+  BULKSMSBD_API_KEY: ${BULKSMSBD_API_KEY:-}
+  BULKSMSBD_SENDER_ID: ${BULKSMSBD_SENDER_ID:-}
+  BULKSMSBD_BASE_URL: ${BULKSMSBD_BASE_URL:-}
+  SSL_WIRELESS_API_TOKEN: ${SSL_WIRELESS_API_TOKEN:-}
+  SSL_WIRELESS_SID: ${SSL_WIRELESS_SID:-}
+  SSL_WIRELESS_BASE_URL: ${SSL_WIRELESS_BASE_URL:-}
+  TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+  TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+  TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+  TWILIO_BASE_URL: ${TWILIO_BASE_URL:-}
+  # ----- WhatsApp transport + invoice/OTP routing (Module 24) -----
+  WHATSAPP_PROVIDER: ${WHATSAPP_PROVIDER:-none}
+  WHATSAPP_TEMPLATE_INVOICE: ${WHATSAPP_TEMPLATE_INVOICE:-hypershop_invoice}
+  WHATSAPP_TEMPLATE_INVOICE_LANGUAGE: ${WHATSAPP_TEMPLATE_INVOICE_LANGUAGE:-en}
+  WHATSAPP_TEMPLATE_OTP: ${WHATSAPP_TEMPLATE_OTP:-hypershop_otp_authentication}
+  WHATSAPP_TEMPLATE_OTP_LANGUAGE: ${WHATSAPP_TEMPLATE_OTP_LANGUAGE:-en}
+  META_WHATSAPP_ACCESS_TOKEN: ${META_WHATSAPP_ACCESS_TOKEN:-}
+  META_WHATSAPP_PHONE_NUMBER_ID: ${META_WHATSAPP_PHONE_NUMBER_ID:-}
+  META_WHATSAPP_BUSINESS_ACCOUNT_ID: ${META_WHATSAPP_BUSINESS_ACCOUNT_ID:-}
+  META_WHATSAPP_API_VERSION: ${META_WHATSAPP_API_VERSION:-v21.0}
+  META_WHATSAPP_APP_SECRET: ${META_WHATSAPP_APP_SECRET:-}
+  META_WHATSAPP_VERIFY_TOKEN: ${META_WHATSAPP_VERIFY_TOKEN:-}
+  CUSTOMER_APP_ANDROID_URL: ${CUSTOMER_APP_ANDROID_URL:-}
+  CUSTOMER_APP_IOS_URL: ${CUSTOMER_APP_IOS_URL:-}
+  # ----- Push notifications (Module 25) -----
+  FCM_SERVICE_ACCOUNT_JSON: ${FCM_SERVICE_ACCOUNT_JSON:-}
+  FCM_PROJECT_ID: ${FCM_PROJECT_ID:-}
+  APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+  APNS_KEY_ID: ${APNS_KEY_ID:-}
+  APNS_PRIVATE_KEY_P8: ${APNS_PRIVATE_KEY_P8:-}
+  APNS_BUNDLE_ID: ${APNS_BUNDLE_ID:-}
+  APNS_IS_SANDBOX: ${APNS_IS_SANDBOX:-false}
+  # ----- Search reranker (Module 28) -----
+  SEARCH_RERANK_PROVIDER: ${SEARCH_RERANK_PROVIDER:-none}
+  SEARCH_RERANK_API_URL: ${SEARCH_RERANK_API_URL:-}
+  SEARCH_RERANK_API_TOKEN: ${SEARCH_RERANK_API_TOKEN:-}
+  SEARCH_RERANK_API_AUTH_HEADER: ${SEARCH_RERANK_API_AUTH_HEADER:-Authorization}
+  SEARCH_RERANK_API_AUTH_SCHEME: ${SEARCH_RERANK_API_AUTH_SCHEME:-Bearer}
+  SEARCH_RERANK_API_METHOD: ${SEARCH_RERANK_API_METHOD:-POST}
+  SEARCH_RERANK_API_STATIC_HEADERS_JSON: ${SEARCH_RERANK_API_STATIC_HEADERS_JSON:-}
+  SEARCH_RERANK_TIMEOUT_S: ${SEARCH_RERANK_TIMEOUT_S:-8}
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      # Tuning — adjust to host RAM. Defaults assume 4 GiB host.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=200"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=1536MB"
+      - "-c"
+      - "work_mem=8MB"
+      - "-c"
+      - "maintenance_work_mem=128MB"
+      - "-c"
+      - "wal_compression=on"
+      - "-c"
+      - "log_min_duration_statement=500"
+      - "-c"
+      - "log_lock_waits=on"
+    volumes:
+      - hypershop_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    logging: *default-logging
+    networks:
+      - internal
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - "redis-server"
+      - "--save"
+      - "900 1"
+      - "--save"
+      - "300 10"
+      - "--appendonly"
+      - "yes"
+      - "--maxmemory"
+      - "512mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
+    volumes:
+      - hypershop_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    logging: *default-logging
+    networks:
+      - internal
+
+  # One-shot migration runner. Blocks `bootstrap` (and transitively
+  # api + worker) until alembic head is reached. Exits 0 on success,
+  # non-zero on any migration error — dependents refuse to start.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: *app-env
+    entrypoint: ["alembic", "upgrade", "head"]
+    command: []  # explicitly clear the image's CMD so only alembic runs
+    logging: *default-logging
+    networks:
+      - internal
+
+  # One-shot bootstrap runner. Idempotently:
+  #   1. Re-syncs roles + permissions from app.modules.iam.permissions
+  #      (otherwise no one in a fresh DB has any permission).
+  #   2. If INITIAL_ADMIN_EMAIL + INITIAL_ADMIN_PASSWORD are set,
+  #      creates / upgrades that user to the `admin` role + marks
+  #      email verified. If they're not set, this step is skipped
+  #      and the operator must run `make prod-create-superuser`
+  #      with prompted password before anyone can log in.
+  # Exits 0 on success; api + worker only start if it succeeds.
+  # ─────────── Volume permission init ───────────
+  # Runs once on stack up to fix ownership on the shared video volume
+  # if a previous run / manual `docker volume create` left it
+  # root-owned. Image builds set perms correctly at /var/hypershop/*
+  # but Docker named volumes can override that on first mount in some
+  # CI setups. Idempotent — no-op when perms are already correct.
+  # api + worker only start after this succeeds.
+  volumes-init:
+    image: alpine:3.20
+    restart: "no"
+    command: >
+      sh -c "mkdir -p /var/hypershop/product_videos &&
+             chown -R 1000:1000 /var/hypershop &&
+             echo 'volume perms ok'"
+    volumes:
+      - hypershop_product_videos:/var/hypershop/product_videos
+    logging: *default-logging
+
+  bootstrap:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      volumes-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        echo "[bootstrap] syncing IAM roles + permissions"
+        python -m app.cli iam-bootstrap
+        if [ -n "$${INITIAL_ADMIN_EMAIL:-}" ] && [ -n "$${INITIAL_ADMIN_PASSWORD:-}" ]; then
+          echo "[bootstrap] ensuring admin user $${INITIAL_ADMIN_EMAIL}"
+          python -m app.cli create-superuser \
+            --email "$${INITIAL_ADMIN_EMAIL}" \
+            --password "$${INITIAL_ADMIN_PASSWORD}"
+        else
+          echo "[bootstrap] INITIAL_ADMIN_EMAIL/PASSWORD unset — skipping admin creation"
+          echo "[bootstrap] run \`make prod-create-superuser email=...\` after deploy"
+        fi
+        echo "[bootstrap] done"
+    command: []
+    logging: *default-logging
+    networks:
+      - internal
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+    environment: *app-env
+    # Dockerfile CMD already runs:
+    # gunicorn app.main:app --worker-class uvicorn.workers.UvicornWorker
+    # --workers 4 --bind 0.0.0.0:8000 --graceful-timeout 30 --timeout 60
+    # Override `command` only if you need to scale workers per host RAM.
+    # Bound to 127.0.0.1 ONLY — never directly reachable from the public
+    # internet. Put a host-level reverse proxy in front (or use the
+    # docker-compose.tls.yml overlay which adds Caddy on the public net).
+    # Caddy talks to this container via the docker `public` network, not
+    # via host loopback, so the bind address doesn't affect that path.
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    volumes:
+      - hypershop_prescriptions:/var/hypershop/prescriptions
+      - hypershop_doctor_pdfs:/var/hypershop/doctor_rx_pdfs
+      - hypershop_pod:/var/hypershop/delivery_pod
+      - hypershop_reports:/var/hypershop/reports
+      - hypershop_product_videos:/var/hypershop/product_videos
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
+    logging: *default-logging
+    networks:
+      - internal
+      - public
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+    environment: *app-env
+    volumes:
+      - hypershop_prescriptions:/var/hypershop/prescriptions
+      - hypershop_doctor_pdfs:/var/hypershop/doctor_rx_pdfs
+      - hypershop_pod:/var/hypershop/delivery_pod
+      - hypershop_reports:/var/hypershop/reports
+      - hypershop_product_videos:/var/hypershop/product_videos
+    healthcheck:
+      # Confirms the ARQ event loop is alive by checking its heartbeat
+      # key in Redis (ARQ writes every health_check_interval = 60s).
+      # Process-death is already caught by `restart: always` — this
+      # catches the worse failure of a wedged event loop.
+      test: ["CMD", "python", "/app/app/worker_healthcheck.py"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64M,mode=1777
+    logging: *default-logging
+    networks:
+      - internal
+
+  # Nightly pg_dump → /backups inside the named volume `hypershop_pg_backups`.
+  # Retains BACKUP_RETENTION_DAYS days of dumps, deletes older ones.
+  # Run a one-off backup on demand with:
+  #   docker compose -f docker-compose.prod.yml exec pg_backup /usr/local/bin/backup.sh
+  # Restore (DESTRUCTIVE) by:
+  #   docker compose -f docker-compose.prod.yml exec -T postgres \
+  #     psql -U $POSTGRES_USER -d $POSTGRES_DB < /backups/<dump>.sql
+  pg_backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - hypershop_pg_backups:/backups
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        cat > /usr/local/bin/backup.sh <<'EOF'
+        #!/bin/sh
+        set -eu
+        ts=$$(date -u +%Y%m%dT%H%M%SZ)
+        out="/backups/hypershop_$${ts}.sql.gz"
+        echo "[backup] $${ts} starting → $${out}"
+        pg_dump -h "$${POSTGRES_HOST}" -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" \
+          --format=plain --no-owner --no-privileges \
+          | gzip -9 > "$${out}.tmp"
+        mv "$${out}.tmp" "$${out}"
+        echo "[backup] $${ts} done ($$(stat -c %s "$${out}") bytes)"
+        find /backups -name 'hypershop_*.sql.gz' -mtime +$${BACKUP_RETENTION_DAYS} -delete
+        EOF
+        chmod +x /usr/local/bin/backup.sh
+        # First backup immediately on start so a fresh deploy has a baseline.
+        /usr/local/bin/backup.sh || echo "[backup] initial run failed (non-fatal)"
+        while true; do
+          sleep "$${BACKUP_INTERVAL_SECONDS}"
+          /usr/local/bin/backup.sh || echo "[backup] cycle failed; will retry next interval"
+        done
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging: *default-logging
+    networks:
+      - internal
+
+volumes:
+  hypershop_pg:
+    driver: local
+  hypershop_redis:
+    driver: local
+  hypershop_prescriptions:
+    driver: local
+  hypershop_doctor_pdfs:
+    driver: local
+  hypershop_pod:
+    driver: local
+  hypershop_reports:
+    driver: local
+  hypershop_product_videos:
+    driver: local
+  hypershop_pg_backups:
+    driver: local
+
+networks:
+  # Postgres + Redis live here; never exposed to the host
+  internal:
+    driver: bridge
+    internal: false  # set true if a separate egress proxy handles outbound
+  # API container exposes port 8000 here; put your TLS reverse proxy
+  # (nginx/Caddy/Traefik) on this network and route to api:8000.
+  public:
+    driver: bridge

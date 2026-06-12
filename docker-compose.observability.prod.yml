@@ -1,0 +1,207 @@
+# Production observability overlay — Jaeger (traces) + Prometheus
+# (metrics) + Grafana (dashboards), persistent + auth-protected.
+#
+# Default OTEL backend choice: **Jaeger self-hosted with Badger storage**.
+# Reasoning:
+#   - $0 incremental — runs on the same VPS as the rest of the stack
+#   - No vendor onboarding / cred rotation
+#   - Badger is an embedded KV store (not Cassandra/ES) — single
+#     binary, on-disk persistent, fits in <2GB RAM under typical load
+#   - Trades write throughput for ops simplicity; fine for a 100-RPS
+#     BD pharmacy stack. Migrate to Tempo or a managed APM (Honeycomb,
+#     Datadog) when (a) trace volume exceeds ~10M spans/day OR
+#     (b) distributed-team trace search becomes a priority.
+#
+# Usage:
+#   docker compose \
+#     -f docker-compose.prod.yml \
+#     -f docker-compose.tls.yml \
+#     -f docker-compose.observability.prod.yml \
+#     up -d --build
+#
+# Required env vars (add to .env.prod):
+#   OTEL_TRACES_SAMPLE_RATIO=0.1     # 10% sampling — see docs/OBSERVABILITY_TRACING.md §Sample-ratio
+#   OTEL_ENVIRONMENT=production
+#   JAEGER_RETENTION_DAYS=7          # Badger TTL — older spans are dropped
+#   GRAFANA_ADMIN_PASSWORD=<long-random>  # initial admin password
+#   OBSERVABILITY_DOMAIN=obs.api.hypershop.example  # DNS → this host
+#   OBSERVABILITY_BASIC_AUTH=user:hash  # see Caddyfile.observability for how to generate
+#
+# Security model:
+#   - The 3 UIs (Jaeger 16686, Prometheus 9090, Grafana 3000) NEVER
+#     bind to a public interface — all internal-network only.
+#   - Caddy on port 443 fronts them at /jaeger, /prometheus, /grafana
+#     under HTTP basic auth. Operator hits e.g.
+#     https://obs.api.hypershop.example/jaeger
+#   - The Caddyfile fragment lives at caddy/Caddyfile.observability.
+#     The base TLS overlay's Caddyfile imports it via `import` directive
+#     (see Caddyfile changes in this PR).
+
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    restart: always
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      SPAN_STORAGE_TYPE: badger
+      BADGER_EPHEMERAL: "false"
+      BADGER_DIRECTORY_VALUE: /badger/data
+      BADGER_DIRECTORY_KEY: /badger/key
+      # TTL is enforced at compaction time. Keep this aligned with
+      # OTEL_TRACES_SAMPLE_RATIO so you don't accidentally fill the disk
+      # with high-volume sampled traces. With 0.1 ratio at 100 RPS,
+      # 7-day retention is ~10–15 GB.
+      BADGER_SPAN_STORE_TTL: ${JAEGER_RETENTION_DAYS:-7}d
+      QUERY_BASE_PATH: /jaeger
+    volumes:
+      - hypershop_jaeger:/badger
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:14269"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    restart: always
+    volumes:
+      - ./ops/prometheus/prometheus.prod.yml:/etc/prometheus/prometheus.yml:ro
+      - hypershop_prometheus:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=${PROMETHEUS_RETENTION_DAYS:-30}d"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.external-url=/prometheus/"
+      - "--web.route-prefix=/"
+    # extra_hosts lets the in-bridge prometheus container reach
+    # node_exporter which lives on host network (see prometheus.prod.yml
+    # job 'node_exporter' targets host.docker.internal:9100).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      api: { condition: service_healthy }
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    restart: always
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env.prod}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_SERVER_ROOT_URL: https://${OBSERVABILITY_DOMAIN:?set OBSERVABILITY_DOMAIN}/grafana
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docs/grafana:/var/lib/grafana/dashboards:ro
+      - hypershop_grafana:/var/lib/grafana
+    depends_on:
+      prometheus: { condition: service_started }
+
+  # --- Host-level metrics (steps 10 + 11 of HOST_HARDENING.md) ----------
+  # node_exporter exposes host CPU / RAM / disk / network metrics to
+  # Prometheus. Mounts /, /sys, /proc read-only so it can read kernel
+  # state without privileged mode.
+  node_exporter:
+    image: prom/node-exporter:v1.7.0
+    restart: always
+    container_name: hypershop_node_exporter
+    pid: host
+    network_mode: host
+    volumes:
+      - /:/host:ro,rslave
+    command:
+      - '--path.rootfs=/host'
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+      - '--web.listen-address=127.0.0.1:9100'
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # cAdvisor — per-container CPU + RAM + I/O. Pairs with node_exporter
+  # (which is host-level only).
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: always
+    container_name: hypershop_cadvisor
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    command:
+      - '--listen_ip=127.0.0.1'
+      - '--port=8080'
+      - '--housekeeping_interval=15s'
+      - '--docker_only=true'
+    ports:
+      - "127.0.0.1:8080:8080"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - public
+
+  # OTEL env injection on api + worker. The base prod compose's
+  # x-app-env block already includes the OTEL_* keys; this overlay
+  # ensures the endpoint points at the in-network Jaeger.
+  api:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: hypershop-api
+      OTEL_ENVIRONMENT: ${OTEL_ENVIRONMENT:-production}
+      OTEL_TRACES_SAMPLE_RATIO: ${OTEL_TRACES_SAMPLE_RATIO:-0.1}
+    depends_on:
+      jaeger: { condition: service_started }
+
+  worker:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: hypershop-worker
+      OTEL_ENVIRONMENT: ${OTEL_ENVIRONMENT:-production}
+      OTEL_TRACES_SAMPLE_RATIO: ${OTEL_TRACES_SAMPLE_RATIO:-0.1}
+    depends_on:
+      jaeger: { condition: service_started }
+
+  # Add Caddy fragment so the existing TLS terminator also fronts the
+  # observability UIs at https://${OBSERVABILITY_DOMAIN}/{jaeger,prometheus,grafana}.
+  # The fragment file is mounted read-only and imported by the base
+  # Caddyfile via the `import` directive.
+  caddy:
+    volumes:
+      - ./caddy/Caddyfile.observability:/etc/caddy/Caddyfile.observability:ro
+    environment:
+      OBSERVABILITY_DOMAIN: ${OBSERVABILITY_DOMAIN}
+      OBSERVABILITY_USER: "${OBSERVABILITY_USER:?set OBSERVABILITY_USER (basic auth username)}"
+      OBSERVABILITY_PASSWORD_HASH: "${OBSERVABILITY_PASSWORD_HASH:?set OBSERVABILITY_PASSWORD_HASH (generate via caddy hash-password)}"
+
+volumes:
+  hypershop_jaeger:
+  hypershop_prometheus:
+  hypershop_grafana:

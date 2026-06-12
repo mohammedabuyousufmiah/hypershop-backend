@@ -1,0 +1,78 @@
+# Module 35 (Product Page Video) — readiness gate.
+#
+# Runs the auto-checkable subset of docs/PRODUCTION_READINESS.md on every
+# pull request and every push to main. The job calls `make readiness`,
+# which in turn runs scripts/run_readiness.sh — the same command an
+# engineer would run locally.
+#
+# Coverage in this CI run:
+#   ✅ Gate 2 — backend integration tests (pytest module suite)
+#   ✅ Gate 9 — rollback runbook present + tokens
+#   ⤳ Gate 3 — frontend Vitest is intentionally skipped here (this is
+#              the BACKEND repo; FRONTEND_DIR is pointed at /nonexistent
+#              so the script's existence-check skips it cleanly).
+#              Frontend tests run in the customer-web repo's separate
+#              readiness.yml workflow.
+#   ⤳ Gates 1, 4, 8 — env-gated; left as SKIP in CI by design.
+#                    They run in staging via the manual smoke flow.
+#
+# To make this a MERGE BLOCKER, a repo admin must add this job's name
+# (`readiness`) to GitHub branch protection: Settings → Branches →
+# Branch protection rules → main → Require status checks → search
+# "readiness". CI alone cannot enforce that — the workflow file's
+# existence is necessary but not sufficient.
+
+name: readiness
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Newer pushes cancel older runs on the same ref so reviewers don't
+# wait for a stale build to finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  readiness:
+    name: make readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install backend deps (editable + dev extras)
+        run: pip install -e ".[dev]"
+
+      # `make readiness` calls scripts/run_readiness.sh which:
+      #   - runs pytest against app/modules/product_videos/tests/
+      #     (testcontainers spins Postgres + Redis on demand — no
+      #      compose `services:` block needed here; matches existing
+      #      ci.yml's pattern)
+      #   - tries Vitest in $FRONTEND_DIR; we override to a path that
+      #     definitely doesn't exist so the script logs a clean SKIP
+      #     for Gate 3 and continues — the frontend repo has its own
+      #     readiness workflow
+      #   - validates docs/ROLLBACK_MODULE_35.md exists + has tokens
+      #   - prints the manual gates (5/6/7/10) for awareness
+      #
+      # Exit code semantics (from run_readiness.sh):
+      #   0 → all auto-gates green (manual gates informational)
+      #   1 → at least one auto-gate failed
+      #   2 → tooling missing
+      #
+      # GitHub Actions treats non-zero as failure — exact behaviour
+      # we want for a merge blocker.
+      - name: make readiness
+        env:
+          FRONTEND_DIR: /nonexistent-frontend-on-ci
+        run: make readiness

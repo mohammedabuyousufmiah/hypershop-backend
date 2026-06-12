@@ -1,0 +1,1 @@
+https://via.placeholder.com/600/0F6B4B/FFFFFF.png?text=Hypershop	fail:<urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1028)>

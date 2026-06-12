@@ -1,0 +1,127 @@
+[project]
+name = "hypershop-fastapi-backend"
+version = "0.1.0"
+description = "Hypershop e-commerce backend — FastAPI modular monolith."
+requires-python = ">=3.12"
+
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    "gunicorn==23.0.0",
+    "starlette==0.41.3",
+    "pydantic==2.10.4",
+    "pydantic-settings==2.7.1",
+    "email-validator==2.2.0",
+    "sqlalchemy[asyncio]==2.0.36",
+    "alembic==1.14.0",
+    "asyncpg==0.30.0",
+    "psycopg2-binary==2.9.10",
+    "redis==5.2.1",
+    "arq==0.26.3",
+    "argon2-cffi==23.1.0",
+    "pyjwt==2.10.1",
+    "cryptography==44.0.0",
+    "structlog==24.4.0",
+    "httpx==0.28.1",
+    "h2==4.1.0",  # APNS HTTP/2 transport in app.modules.push.transport.push_apns
+    "tenacity==9.0.0",
+    "aiosmtplib==3.0.2",
+    "jinja2==3.1.5",
+    "typer==0.15.1",
+    "fpdf2==2.8.1",
+    "openpyxl==3.1.5",  # XLSX exports for the reporting platform (Module 30)
+    "boto3>=1.34",  # S3-compatible client (Cloudflare R2) for product_videos (Module 35)
+    "prometheus-client>=0.20",  # /metrics endpoint exporter (project-wide; first wired by Module 35)
+    # OpenTelemetry tracing (project-wide; tracing OFF by default — set
+    # OTEL_EXPORTER_OTLP_ENDPOINT to enable. See app/core/tracing.py).
+    "opentelemetry-api>=1.27,<2",
+    "opentelemetry-sdk>=1.27,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.27,<2",
+    "opentelemetry-instrumentation-fastapi>=0.48b0,<1",
+    "opentelemetry-instrumentation-sqlalchemy>=0.48b0,<1",
+    "opentelemetry-instrumentation-httpx>=0.48b0,<1",
+    "opentelemetry-instrumentation-redis>=0.48b0,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.25.2",
+    "pytest-cov==6.0.0",
+    "anyio==4.7.0",
+    "testcontainers[postgres,redis]==4.9.0",
+    "ruff==0.8.6",
+    "mypy==1.14.1",
+    "bandit==1.8.0",
+    "pip-audit==2.7.3",
+    "types-redis==4.6.0.20241004",
+    "freezegun==1.5.1",
+]
+
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "C4", "UP", "N", "S", "ASYNC", "RUF", "SIM", "T20"]
+ignore = ["S101", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S311"]
+"app/**/tests/**" = ["S105", "S106", "S311"]
+"alembic/**" = ["S101"]
+"app/cli.py" = ["T201"]
+# Constant names and enum values legitimately contain the word
+# "password"/"token" — flake8-bandit S105 only sees the name.
+"app/modules/iam/handlers.py" = ["S105"]
+"app/modules/iam/models.py" = ["S105"]
+"app/modules/iam/schemas.py" = ["S105"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+plugins = ["pydantic.mypy"]
+exclude = ["alembic/versions/"]
+
+[[tool.mypy.overrides]]
+module = ["argon2.*", "arq.*", "testcontainers.*", "aiosmtplib.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# Session-scope the default fixture loop so session-scoped resources
+# (the SQLAlchemy async engine, redis pool) tear down on the same loop
+# that created them. Without this the "Event loop is closed" errors
+# fire during cleanup of integration tests.
+asyncio_default_fixture_loop_scope = "session"
+testpaths = ["tests", "app"]
+python_files = ["test_*.py"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "-q"]
+markers = [
+    "integration: tests requiring real Postgres/Redis (testcontainers)",
+]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+omit = ["app/cli.py", "app/worker.py"]
+
+[tool.coverage.report]
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "@overload",
+]
+
+[tool.bandit]
+exclude_dirs = ["tests", "alembic"]

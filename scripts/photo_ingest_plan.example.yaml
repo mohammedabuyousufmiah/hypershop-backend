@@ -1,0 +1,46 @@
+# Example multi-folder photo ingest plan.
+#
+# Run with:
+#   python -m scripts.ingest_photos --plan-file scripts/photo_ingest_plan.example.yaml
+#
+# 4 modes shown:
+#   1. Sequential — anonymous stock images → 1:1 to next unphotographed
+#      products in the target category.
+#   2. Filename fuzzy-match — branded press-kit drops; matches by
+#      brand+model tokens in the filename.
+#   3. filename_overrides — pin specific files to specific category
+#      first-product hero shots.
+#   4. Mixed — overrides handled first, leftovers go through whichever
+#      match_mode is set.
+
+defaults:
+  position: 0          # first image becomes the PDP hero
+  match_mode: sequential
+  threshold: 0.45      # filename fuzzy-match cutoff
+
+jobs:
+  # Anonymous women's fashion stock photos
+  - folder: "C:/Users/imyou/OneDrive/Desktop/HYPERSHOP ADD/Hypershop product image/WOMEN FASHTION"
+    category_slug: womens-fashion
+
+  # Mixed category-cover drop with two named overrides
+  - folder: "C:/Users/imyou/OneDrive/Desktop/HYPERSHOP ADD/Hypershop product image/purches by categorie Image"
+    category_slug: womens-fashion-beauty
+    filename_overrides:
+      Beuty.png:
+        category_slug: beauty-fragrance
+      PrgnancePM.png:
+        category_slug: baby-maternity
+
+  # Branded press-kit example — fuzzy filename match
+  # - folder: "C:/staging/baseus_pressroom/"
+  #   brand_slug: baseus
+  #   match_mode: filename
+  #   threshold: 0.45
+
+  # Multi-category sequential pool example
+  # - folder: "C:/staging/mixed_electronics/"
+  #   category_slug:
+  #     - mobile-gadgets
+  #     - computers-drones
+  #   match_mode: sequential

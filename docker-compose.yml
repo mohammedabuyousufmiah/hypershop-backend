@@ -1,0 +1,218 @@
+name: hypershop
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: hypershop
+      POSTGRES_USER: hypershop
+      POSTGRES_PASSWORD: hypershop
+    volumes:
+      - hypershop_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hypershop -d hypershop"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - hypershop_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "6379:6379"
+
+  mailpit:
+    image: axllent/mailpit:v1.21
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+
+  # ─────────── Volume permission init ───────────
+  # The api + worker images create /var/hypershop/* with uid 1000 at
+  # build time. On a fresh ``docker volume create`` Docker copies image
+  # perms into the empty volume, but if the volume was previously
+  # created (CI runner reuse, manual volume create, SELinux contexts)
+  # ownership can drift to root:root and the app user (uid 1000) gets
+  # EACCES on writes. This one-shot service runs as root, fixes
+  # ownership of the shared video volume, and exits — api + worker
+  # depend on its successful completion.
+  volumes-init:
+    image: alpine:3.20
+    command: >
+      sh -c "mkdir -p /var/hypershop/product_videos &&
+             chown -R 1000:1000 /var/hypershop &&
+             echo 'volume perms ok'"
+    volumes:
+      - hypershop_product_videos:/var/hypershop/product_videos
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      volumes-init: { condition: service_completed_successfully }
+    environment:
+      ENVIRONMENT: dev
+      LOG_LEVEL: INFO
+      SERVICE_NAME: hypershop-api
+      API_PREFIX: /api/v1
+      DATABASE_URL: postgresql+asyncpg://hypershop:hypershop@postgres:5432/hypershop
+      DATABASE_SYNC_URL: postgresql+psycopg2://hypershop:hypershop@postgres:5432/hypershop
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-replace-with-32-plus-chars-please}
+      JWT_ACCESS_TTL_SECONDS: 900
+      JWT_REFRESH_TTL_SECONDS: 604800
+      ARGON2_TIME_COST: 3
+      ARGON2_MEMORY_COST_KIB: 65536
+      ARGON2_PARALLELISM: 4
+      RATE_LIMIT_LOGIN_PER_MINUTE: 5
+      RATE_LIMIT_OTP_PER_HOUR: 5
+      RATE_LIMIT_REGISTER_PER_HOUR: 10
+      OTP_LENGTH: 6
+      OTP_TTL_SECONDS: 600
+      OTP_MAX_ATTEMPTS: 5
+      PASSWORD_RESET_TTL_SECONDS: 3600
+      CORS_ORIGINS: http://localhost:3000
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      SMTP_USE_TLS: "false"
+      SMTP_SENDER: no-reply@hypershop.local
+      ARQ_QUEUE_NAME: hypershop:jobs
+      # ----- AI providers (defaults to none → 502 with clear message) -----
+      AI_PROVIDER: ${AI_PROVIDER:-none}
+      AI_BACKUP_PROVIDERS: ${AI_BACKUP_PROVIDERS:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL_DEFAULT: ${OPENAI_MODEL_DEFAULT:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      ANTHROPIC_MODEL_DEFAULT: ${ANTHROPIC_MODEL_DEFAULT:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_BASE_URL: ${GEMINI_BASE_URL:-}
+      GEMINI_MODEL_DEFAULT: ${GEMINI_MODEL_DEFAULT:-}
+      # ----- Social login (empty → /auth/google,/huawei return 503) -----
+      GOOGLE_OAUTH_CLIENT_IDS: ${GOOGLE_OAUTH_CLIENT_IDS:-}
+      HUAWEI_OAUTH_CLIENT_IDS: ${HUAWEI_OAUTH_CLIENT_IDS:-}
+      # ----- Formulary provider -----
+      FORMULARY_PROVIDER: ${FORMULARY_PROVIDER:-none}
+      FORMULARY_API_KEY: ${FORMULARY_API_KEY:-}
+      FORMULARY_BASE_URL: ${FORMULARY_BASE_URL:-}
+      # ----- Product page videos (Module 35) -----
+      # All three blocks below mirror docker-compose.prod.yml so dev /
+      # prod parity is preserved. Empty creds = disk fallback (raw +
+      # output land on the shared `hypershop_product_videos` volume).
+      PRODUCT_VIDEO_STORAGE_DIR: /var/hypershop/product_videos
+      PRODUCT_VIDEO_MAX_SIZE_MB: ${PRODUCT_VIDEO_MAX_SIZE_MB:-200}
+      PRODUCT_VIDEO_MAX_DURATION_SECONDS: ${PRODUCT_VIDEO_MAX_DURATION_SECONDS:-60}
+      PRODUCT_VIDEO_MAX_APPROVED_PER_PRODUCT: ${PRODUCT_VIDEO_MAX_APPROVED_PER_PRODUCT:-3}
+      PRODUCT_VIDEO_RAW_RETENTION_DAYS: ${PRODUCT_VIDEO_RAW_RETENTION_DAYS:-60}
+      PRODUCT_VIDEO_MAX_CONCURRENT_JOBS: ${PRODUCT_VIDEO_MAX_CONCURRENT_JOBS:-2}
+      PRODUCT_VIDEO_PUBLIC_BASE_URL: ${PRODUCT_VIDEO_PUBLIC_BASE_URL:-}
+      # ----- Cloudflare R2 (private raw originals) -----
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET_NAME: ${R2_BUCKET_NAME:-}
+      R2_PUBLIC_BASE_URL: ${R2_PUBLIC_BASE_URL:-}
+      R2_PRIVATE_PREFIX: ${R2_PRIVATE_PREFIX:-raw/product-videos/}
+      R2_PUBLIC_PREFIX: ${R2_PUBLIC_PREFIX:-public/product-videos/}
+      # ----- Bunny.net (public HLS + CDN) -----
+      BUNNY_STORAGE_ZONE_NAME: ${BUNNY_STORAGE_ZONE_NAME:-}
+      BUNNY_STORAGE_ACCESS_KEY: ${BUNNY_STORAGE_ACCESS_KEY:-}
+      BUNNY_STORAGE_REGION: ${BUNNY_STORAGE_REGION:-sg}
+      BUNNY_PULL_ZONE_HOSTNAME: ${BUNNY_PULL_ZONE_HOSTNAME:-}
+      BUNNY_PATH_PREFIX: ${BUNNY_PATH_PREFIX:-product-videos/}
+    ports:
+      - "8000:8000"
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./app:/app/app
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
+      # Shared with the worker — when R2 is unconfigured (default in
+      # dev) raw uploads + FFmpeg outputs spool here so the worker
+      # can read what the api wrote. With R2/Bunny configured the
+      # volume sits idle and storage flows through the cloud.
+      - hypershop_product_videos:/var/hypershop/product_videos
+
+  worker:
+    # PROFILE: opt-in only. The worker's crash-loop on this dev box
+    # cascades into the api via `depends_on`, taking the whole stack
+    # down every ~60s. To run scheduled jobs, start it explicitly:
+    #   docker compose --profile worker up -d worker
+    profiles: ["worker"]
+    # NOTE: this single ARQ worker container handles BOTH
+    # ``functions`` (e.g. ``process_product_video``, dispatched from
+    # the api via ``arq_pool.enqueue_job``) AND ``cron_jobs`` (the
+    # outbox tick, FFmpeg poller, raw-retention sweep, etc. — all
+    # registered in ``app.worker.WorkerSettings``). There is NO
+    # separate "beat" service in this stack: ARQ embeds its
+    # scheduler in-process, so splitting it out would just add a
+    # container without giving us anything Celery-style multi-worker
+    # would. Scale horizontally by running multiple replicas of
+    # this service — they coordinate via ``SKIP LOCKED`` in
+    # Postgres + Redis lock keys.
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      volumes-init: { condition: service_completed_successfully }
+    environment:
+      ENVIRONMENT: dev
+      LOG_LEVEL: INFO
+      SERVICE_NAME: hypershop-worker
+      DATABASE_URL: postgresql+asyncpg://hypershop:hypershop@postgres:5432/hypershop
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-replace-with-32-plus-chars-please}
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      SMTP_USE_TLS: "false"
+      SMTP_SENDER: no-reply@hypershop.local
+      ARQ_QUEUE_NAME: hypershop:jobs
+      # ----- Product video pipeline (FFmpeg lives in this container) -----
+      PRODUCT_VIDEO_STORAGE_DIR: /var/hypershop/product_videos
+      PRODUCT_VIDEO_MAX_SIZE_MB: ${PRODUCT_VIDEO_MAX_SIZE_MB:-200}
+      PRODUCT_VIDEO_MAX_DURATION_SECONDS: ${PRODUCT_VIDEO_MAX_DURATION_SECONDS:-60}
+      PRODUCT_VIDEO_MAX_APPROVED_PER_PRODUCT: ${PRODUCT_VIDEO_MAX_APPROVED_PER_PRODUCT:-3}
+      PRODUCT_VIDEO_RAW_RETENTION_DAYS: ${PRODUCT_VIDEO_RAW_RETENTION_DAYS:-60}
+      PRODUCT_VIDEO_MAX_CONCURRENT_JOBS: ${PRODUCT_VIDEO_MAX_CONCURRENT_JOBS:-2}
+      PRODUCT_VIDEO_PUBLIC_BASE_URL: ${PRODUCT_VIDEO_PUBLIC_BASE_URL:-}
+      # ----- Cloudflare R2 (worker downloads raw from here) -----
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET_NAME: ${R2_BUCKET_NAME:-}
+      R2_PUBLIC_BASE_URL: ${R2_PUBLIC_BASE_URL:-}
+      R2_PRIVATE_PREFIX: ${R2_PRIVATE_PREFIX:-raw/product-videos/}
+      R2_PUBLIC_PREFIX: ${R2_PUBLIC_PREFIX:-public/product-videos/}
+      # ----- Bunny.net (worker uploads HLS + thumbnail here) -----
+      BUNNY_STORAGE_ZONE_NAME: ${BUNNY_STORAGE_ZONE_NAME:-}
+      BUNNY_STORAGE_ACCESS_KEY: ${BUNNY_STORAGE_ACCESS_KEY:-}
+      BUNNY_STORAGE_REGION: ${BUNNY_STORAGE_REGION:-sg}
+      BUNNY_PULL_ZONE_HOSTNAME: ${BUNNY_PULL_ZONE_HOSTNAME:-}
+      BUNNY_PATH_PREFIX: ${BUNNY_PATH_PREFIX:-product-videos/}
+    volumes:
+      - ./app:/app/app
+      - hypershop_product_videos:/var/hypershop/product_videos
+
+volumes:
+  hypershop_pg:
+  hypershop_redis:
+  hypershop_product_videos:

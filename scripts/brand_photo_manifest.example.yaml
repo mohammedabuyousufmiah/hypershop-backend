@@ -1,0 +1,50 @@
+# Brand-photo download manifest.
+#
+# Each item carries a direct image URL + a brand-slug-aware filename.
+# Filename should embed brand name + model so the downstream
+# ingest_photos.py filename-fuzzy-match can find the right product.
+#
+# How to find URLs (per brand):
+#   1. Open the brand's product page (e.g. samsung.com/.../galaxy-s24)
+#   2. Right-click the hero image → "Copy image address"
+#   3. Paste into the manifest below
+#   4. Repeat per product variant (3-5 images per SKU is healthy)
+#
+# Brand spec pages tend to expose direct CDN URLs (images.samsung.com,
+# www.dji.com/cms-asset/.../...jpg, p1-q.mafcdn.com/...). These DO
+# work over plain HTTPS — the press-room pages are what 403 the
+# scraper.
+#
+# Run:
+#   python -m scripts.download_brand_photos \
+#       --manifest scripts/brand_photo_manifest.example.yaml
+#
+# Then ingest the downloaded folder:
+#   python -m scripts.ingest_photos \
+#       --folder "C:/staging/photos/samsung/" \
+#       --brand-slug samsung \
+#       --match-mode filename \
+#       --threshold 0.45
+
+defaults:
+  dest: "C:/staging/photos"
+  brand_slug: samsung
+
+items:
+  # Samsung (default brand_slug applies)
+  - url: "https://images.samsung.com/is/image/samsung/p6pim/levant/2401/gallery/levant-galaxy-s24-ultra-sm-s928-sm-s928bzkcmea-thumb-540253977"
+    filename: "samsung_galaxy_s24_ultra_titanium_black.jpg"
+  - url: "https://images.samsung.com/is/image/samsung/p6pim/levant/2202/gallery/levant-galaxy-watch4-classic-46mm-r890-sm-r890nzkamea-thumb-484556057"
+    filename: "samsung_galaxy_watch_4_classic.jpg"
+
+  # Lenovo press CDN
+  - brand_slug: lenovo
+    url: "https://p1-ofp.static.pub//medias/bWFzdGVyfHJvb3R8MTU4ODM5fGltYWdlL3BuZ3xoMjMvaGJlLzE0NTYwMTA1MzM2OTI2LnBuZ3w1Y2RmOWQ4YjQ5MjI4NWQ4ZjE4MjBkOWFlZGZmZWE2NjM2NTcxMTU1MjYzZGE5OWVmMzJjMDU5OWNlZDhkMjMy/lenovo-thinkpad-t14-gen-4-hero.png"
+    filename: "lenovo_thinkpad_t14_gen4_hero.png"
+
+  # DJI
+  - brand_slug: dji
+    url: "https://www-cdn.djiits.com/cms/uploads/0c2ea8d5d8a3a9c0e62b3fb6c44a2cd9.jpg"
+    filename: "dji_mavic_3_pro_hero.jpg"
+
+  # Add more rows — each per direct image URL
