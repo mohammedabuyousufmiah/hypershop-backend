@@ -25,13 +25,25 @@ target_metadata = Base.metadata
 
 
 def _sync_database_url() -> str:
-    url = os.environ.get("DATABASE_SYNC_URL")
-    if not url:
+    explicit = os.environ.get("DATABASE_SYNC_URL")
+    if explicit:
+        return explicit
+    # Managed platforms (Render/Railway/Heroku) inject only DATABASE_URL,
+    # often a driverless DSN. Derive the +psycopg2 sync URL Alembic needs —
+    # same normalisation as app.core.config.
+    raw = os.environ.get("DATABASE_URL", "")
+    if not raw:
         raise RuntimeError(
-            "DATABASE_SYNC_URL is required for Alembic. "
-            "Set it to a postgresql+psycopg2 URL pointing at the same DB as DATABASE_URL.",
+            "Neither DATABASE_SYNC_URL nor DATABASE_URL is set. Alembic needs a "
+            "postgresql+psycopg2 sync URL (or a DATABASE_URL to derive it from).",
         )
-    return url
+    for prefix in ("postgres://", "postgresql+asyncpg://"):
+        if raw.startswith(prefix):
+            raw = "postgresql://" + raw[len(prefix):]
+            break
+    if raw.startswith("postgresql://"):
+        return "postgresql+psycopg2://" + raw[len("postgresql://"):]
+    return raw.replace("+asyncpg", "+psycopg2", 1)
 
 
 def run_migrations_offline() -> None:
